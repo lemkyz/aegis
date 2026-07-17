@@ -4,6 +4,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from aegis.config.settings import get_settings
+from aegis.utils.text import strip_markdown_code_fence
 from aegis.schemas.analysis import ScannerEvidence, SecurityFinding
 
 
@@ -132,7 +133,15 @@ scanner result represents a genuine vulnerability.
 
         raw_findings = parsed.get("findings", [])
 
-        return [
-            SecurityFinding.model_validate(finding)
-            for finding in raw_findings
-        ]
+        validated_findings: list[SecurityFinding] = []
+
+        for finding in raw_findings:
+            validated = SecurityFinding.model_validate(finding)
+
+            validated.proposed_patch = strip_markdown_code_fence(
+                validated.proposed_patch
+            )
+
+            validated_findings.append(validated)
+
+        return validated_findings
