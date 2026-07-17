@@ -77,13 +77,14 @@ Analyze the following source code:
 """.strip()
 
         response = await self.client.chat.completions.create(
-            model=self.model,
-            temperature=0.1,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
+    model=self.model,
+    temperature=0.1,
+    max_tokens=2000,
+    messages=[
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ],
+)
 
         content = response.choices[0].message.content
 
