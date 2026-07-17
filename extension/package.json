@@ -24,6 +24,11 @@
         "command": "aegis.analyzeSelectedCode",
         "title": "Aegis: Analyze Selected Code",
         "category": "Aegis"
+      },
+      {
+        "command": "aegis.applySecureFix",
+        "title": "Aegis: Apply Secure Fix",
+        "category": "Aegis"
       }
     ],
     "menus": {
@@ -31,7 +36,12 @@
         {
           "command": "aegis.analyzeSelectedCode",
           "when": "editorHasSelection",
-          "group": "navigation@100"
+          "group": "aegis@1"
+        },
+        {
+          "command": "aegis.applySecureFix",
+          "when": "editorHasSelection",
+          "group": "aegis@2"
         }
       ]
     },
@@ -47,7 +57,7 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^24.13.3",
     "@types/vscode": "^1.100.0",
     "typescript": "^5.8.0"
   }
