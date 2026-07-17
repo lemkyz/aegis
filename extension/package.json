@@ -1,0 +1,54 @@
+{
+  "name": "aegis-security",
+  "displayName": "Aegis Security",
+  "description": "Evidence-first AI security engineering for VS Code.",
+  "version": "0.1.0",
+  "publisher": "aegis",
+  "private": true,
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc --watch -p ./"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "aegis.analyzeSelectedCode",
+        "title": "Aegis: Analyze Selected Code",
+        "category": "Aegis"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "aegis.analyzeSelectedCode",
+          "when": "editorHasSelection",
+          "group": "navigation@100"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Aegis",
+      "properties": {
+        "aegis.backendUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "Address of the local Aegis backend."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.100.0",
+    "typescript": "^5.8.0"
+  }
+}
