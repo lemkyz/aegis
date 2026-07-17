@@ -27,6 +27,21 @@ class SecurityAnalyzer:
             f"2. Semgrep bitti. "
             f"{len(scanner_evidence)} kanıt bulundu."
         )
+
+        if not scanner_evidence:
+            print(
+                "3. Semgrep bulgusu yok. "
+                "NVIDIA modeli çağrılmadan analiz tamamlandı."
+            )
+
+            return AnalyzeCodeResponse(
+                filename=request.filename,
+                language=request.language,
+                model=self.model_client.model,
+                scanner=self.scanner.name,
+                findings=[],
+            )
+
         print("3. NVIDIA analizi başlıyor...")
 
         findings = await self.model_client.analyze_security(
