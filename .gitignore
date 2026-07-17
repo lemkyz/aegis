@@ -27,3 +27,6 @@ venv/
 
 # Operating system
 .DS_Store
+backend/.env
+.env
+*.env
