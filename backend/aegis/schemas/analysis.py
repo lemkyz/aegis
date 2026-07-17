@@ -16,6 +16,17 @@ class AnalyzeCodeRequest(BaseModel):
     filename: str = Field(default="unknown.py", max_length=500)
 
 
+class ScannerEvidence(BaseModel):
+    tool: str
+    rule_id: str
+    message: str
+    severity: str
+    file: str
+    line_start: int
+    line_end: int
+    code: str | None = None
+
+
 class SecurityFinding(BaseModel):
     title: str
     severity: Severity
@@ -23,6 +34,7 @@ class SecurityFinding(BaseModel):
 
     summary: str
     evidence: list[str] = Field(default_factory=list)
+    scanner_evidence: list[ScannerEvidence] = Field(default_factory=list)
 
     cwe: list[str] = Field(default_factory=list)
     owasp: list[str] = Field(default_factory=list)
@@ -38,4 +50,5 @@ class AnalyzeCodeResponse(BaseModel):
     filename: str
     language: str
     model: str
+    scanner: str
     findings: list[SecurityFinding]

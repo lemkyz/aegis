@@ -1,0 +1,31 @@
+rules:
+  - id: aegis.python.sql-injection.formatted-query
+    languages:
+      - python
+    severity: ERROR
+    message: >-
+      SQL query is constructed using string interpolation and then executed.
+      Use a parameterized query instead.
+    metadata:
+      cwe:
+        - CWE-89
+      owasp:
+        - A03:2021
+      category: security
+      technology:
+        - python
+        - sqlite
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $QUERY = f"...{$INPUT}..."
+              ...
+              $DB.execute($QUERY, ...)
+          - pattern: |
+              $QUERY = "...".format(...)
+              ...
+              $DB.execute($QUERY, ...)
+          - pattern: |
+              $QUERY = "..." % ...
+              ...
+              $DB.execute($QUERY, ...)
