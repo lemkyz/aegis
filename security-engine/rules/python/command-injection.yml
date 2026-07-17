@@ -1,0 +1,67 @@
+rules:
+  - id: aegis.python.command-injection.os-system
+    languages:
+      - python
+    severity: ERROR
+    message: >-
+      A dynamically constructed command is passed to os.system.
+      Avoid invoking a shell with untrusted input. Use subprocess with
+      an argument list, shell=False, and strict input validation.
+    metadata:
+      cwe:
+        - CWE-78
+      owasp:
+        - A03:2021
+      category: security
+      technology:
+        - python
+    patterns:
+      - pattern-either:
+          - pattern: os.system(f"...{$INPUT}...")
+          - pattern: os.system("...".format(...))
+          - pattern: os.system("..." % ...)
+          - pattern: |
+              $COMMAND = f"...{$INPUT}..."
+              ...
+              os.system($COMMAND)
+          - pattern: |
+              $COMMAND = "...".format(...)
+              ...
+              os.system($COMMAND)
+          - pattern: |
+              $COMMAND = "..." % ...
+              ...
+              os.system($COMMAND)
+
+  - id: aegis.python.command-injection.subprocess-shell
+    languages:
+      - python
+    severity: ERROR
+    message: >-
+      A dynamically constructed command is executed through a shell.
+      Use an argument list with shell=False and validate untrusted input.
+    metadata:
+      cwe:
+        - CWE-78
+      owasp:
+        - A03:2021
+      category: security
+      technology:
+        - python
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(f"...{$INPUT}...", ..., shell=True, ...)
+          - pattern: subprocess.call(f"...{$INPUT}...", ..., shell=True, ...)
+          - pattern: subprocess.Popen(f"...{$INPUT}...", ..., shell=True, ...)
+          - pattern: |
+              $COMMAND = f"...{$INPUT}..."
+              ...
+              subprocess.run($COMMAND, ..., shell=True, ...)
+          - pattern: |
+              $COMMAND = f"...{$INPUT}..."
+              ...
+              subprocess.call($COMMAND, ..., shell=True, ...)
+          - pattern: |
+              $COMMAND = f"...{$INPUT}..."
+              ...
+              subprocess.Popen($COMMAND, ..., shell=True, ...)
