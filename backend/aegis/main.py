@@ -3,6 +3,11 @@ from fastapi import FastAPI, HTTPException
 from aegis.config.settings import get_settings
 from aegis.orchestrator.analyzer import SecurityAnalyzer
 from aegis.schemas.analysis import AnalyzeCodeRequest, AnalyzeCodeResponse
+from aegis.schemas.dependencies import (
+    DependencyScanRequest,
+    DependencyScanResponse,
+)
+from aegis.security.osv import OsvDependencyScanner
 
 
 settings = get_settings()
@@ -14,6 +19,7 @@ app = FastAPI(
 )
 
 analyzer = SecurityAnalyzer()
+dependency_scanner = OsvDependencyScanner()
 
 
 @app.get("/health")
@@ -71,3 +77,24 @@ async def deep_analyze_code(
             status_code=502,
             detail=f"Deep security analysis failed: {exc}",
         ) from exc
+
+@app.post(
+    "/v1/dependencies/scan",
+    response_model=DependencyScanResponse,
+)
+async def scan_dependencies(
+    request: DependencyScanRequest,
+) -> DependencyScanResponse:
+    """
+    Query known vulnerabilities for exact dependency versions.
+    """
+    try:
+        return await dependency_scanner.scan(
+            request.packages
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Dependency scan failed: {exc}",
+        ) from exc
+
