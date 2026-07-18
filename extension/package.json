@@ -21,8 +21,13 @@
   "contributes": {
     "commands": [
       {
-        "command": "aegis.analyzeSelectedCode",
-        "title": "Aegis: Analyze Selected Code",
+        "command": "aegis.fastScanSelectedCode",
+        "title": "Aegis: Fast Scan Selected Code",
+        "category": "Aegis"
+      },
+      {
+        "command": "aegis.deepAnalyzeSelectedCode",
+        "title": "Aegis: Deep Analysis Selected Code",
         "category": "Aegis"
       },
       {
@@ -34,14 +39,19 @@
     "menus": {
       "editor/context": [
         {
-          "command": "aegis.analyzeSelectedCode",
+          "command": "aegis.fastScanSelectedCode",
           "when": "editorHasSelection",
           "group": "aegis@1"
         },
         {
-          "command": "aegis.applySecureFix",
+          "command": "aegis.deepAnalyzeSelectedCode",
           "when": "editorHasSelection",
           "group": "aegis@2"
+        },
+        {
+          "command": "aegis.applySecureFix",
+          "when": "editorHasSelection",
+          "group": "aegis@3"
         }
       ]
     },

@@ -29,10 +29,45 @@ async def health() -> dict[str, str]:
 async def analyze_code(
     request: AnalyzeCodeRequest,
 ) -> AnalyzeCodeResponse:
+    """
+    Backward-compatible deep analysis endpoint.
+    """
     try:
-        return await analyzer.analyze(request)
+        return await analyzer.deep_analyze(request)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
             detail=f"Security analysis failed: {exc}",
+        ) from exc
+
+
+@app.post("/v1/analyze/fast", response_model=AnalyzeCodeResponse)
+async def fast_analyze_code(
+    request: AnalyzeCodeRequest,
+) -> AnalyzeCodeResponse:
+    """
+    Fast scanner-only analysis. Does not call an AI model.
+    """
+    try:
+        return await analyzer.fast_analyze(request)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Fast security scan failed: {exc}",
+        ) from exc
+
+
+@app.post("/v1/analyze/deep", response_model=AnalyzeCodeResponse)
+async def deep_analyze_code(
+    request: AnalyzeCodeRequest,
+) -> AnalyzeCodeResponse:
+    """
+    Semgrep evidence followed by AI analysis when evidence exists.
+    """
+    try:
+        return await analyzer.deep_analyze(request)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Deep security analysis failed: {exc}",
         ) from exc

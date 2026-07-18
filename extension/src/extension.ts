@@ -2,6 +2,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 type Severity = "info" | "low" | "medium" | "high" | "critical";
+type AnalysisMode = "fast" | "deep";
 
 interface ScannerEvidence {
   tool: string;
@@ -42,14 +43,28 @@ interface LastAnalysis {
   documentVersion: number;
   selection: vscode.Range;
   response: AnalyzeResponse;
+  mode: AnalysisMode;
+}
+
+interface AnalysisInput {
+  backendUrl: string;
+  code: string;
+  filename: string;
+  language: string;
+  mode: AnalysisMode;
 }
 
 let lastAnalysis: LastAnalysis | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  const analyzeCommand = vscode.commands.registerCommand(
-    "aegis.analyzeSelectedCode",
-    analyzeSelectedCode,
+  const fastScanCommand = vscode.commands.registerCommand(
+    "aegis.fastScanSelectedCode",
+    async () => analyzeSelectedCode("fast"),
+  );
+
+  const deepAnalysisCommand = vscode.commands.registerCommand(
+    "aegis.deepAnalyzeSelectedCode",
+    async () => analyzeSelectedCode("deep"),
   );
 
   const applyFixCommand = vscode.commands.registerCommand(
@@ -57,10 +72,14 @@ export function activate(context: vscode.ExtensionContext): void {
     applySecureFix,
   );
 
-  context.subscriptions.push(analyzeCommand, applyFixCommand);
+  context.subscriptions.push(
+    fastScanCommand,
+    deepAnalysisCommand,
+    applyFixCommand,
+  );
 }
 
-async function analyzeSelectedCode(): Promise<void> {
+async function analyzeSelectedCode(mode: AnalysisMode): Promise<void> {
   const editor = vscode.window.activeTextEditor;
 
   if (!editor) {
@@ -93,11 +112,16 @@ async function analyzeSelectedCode(): Promise<void> {
     .get<string>("backendUrl", "http://127.0.0.1:8000")
     .replace(/\/+$/, "");
 
+  const progressTitle =
+    mode === "fast"
+      ? "Aegis hızlı güvenlik taraması yapıyor"
+      : "Aegis derin AI analizi yapıyor";
+
   try {
     const result = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: "Aegis seçili kodu analiz ediyor",
+        title: progressTitle,
         cancellable: false,
       },
       async () =>
@@ -106,6 +130,7 @@ async function analyzeSelectedCode(): Promise<void> {
           code: selectedCode,
           filename,
           language,
+          mode,
         }),
     );
 
@@ -114,13 +139,28 @@ async function analyzeSelectedCode(): Promise<void> {
       documentVersion: document.version,
       selection,
       response: result,
+      mode,
     };
 
-    await showAnalysisResult(result);
+    await showAnalysisResult(result, mode);
+
+    if (mode === "fast" && result.findings.length > 0) {
+      const action = await vscode.window.showWarningMessage(
+        `Aegis Fast Scan ${result.findings.length} şüpheli bulgu tespit etti.`,
+        "Deep Analysis çalıştır",
+        "Raporu açık bırak",
+      );
+
+      if (action === "Deep Analysis çalıştır") {
+        await analyzeSelectedCode("deep");
+      }
+
+      return;
+    }
 
     const firstPatch = findFirstPatch(result);
 
-    if (firstPatch) {
+    if (mode === "deep" && firstPatch) {
       const action = await vscode.window.showInformationMessage(
         `Aegis ${result.findings.length} güvenlik bulgusu tespit etti.`,
         "Güvenli düzeltmeyi uygula",
@@ -144,7 +184,14 @@ async function analyzeSelectedCode(): Promise<void> {
 async function applySecureFix(): Promise<void> {
   if (!lastAnalysis) {
     void vscode.window.showWarningMessage(
-      "Aegis: Önce seçili kodu analiz et.",
+      "Aegis: Önce Deep Analysis çalıştır.",
+    );
+    return;
+  }
+
+  if (lastAnalysis.mode !== "deep") {
+    void vscode.window.showWarningMessage(
+      "Aegis: Fast Scan patch üretmez. Önce Deep Analysis çalıştır.",
     );
     return;
   }
@@ -198,7 +245,7 @@ async function applySecureFix(): Promise<void> {
     {
       modal: true,
       detail:
-        "Değişiklik yalnızca açık dosyadaki analiz edilmiş seçim alanına uygulanacaktır.",
+        "Değişiklik yalnızca analiz edilmiş seçim alanına uygulanacaktır.",
     },
     "Düzeltmeyi uygula",
     "İptal",
@@ -226,25 +273,33 @@ async function applySecureFix(): Promise<void> {
   }
 
   await editor.document.save();
-
   lastAnalysis = undefined;
 
   void vscode.window.showInformationMessage(
-    "Aegis: Güvenli düzeltme uygulandı. Kodu yeniden analiz et.",
+    "Aegis: Güvenli düzeltme uygulandı. Fast Scan ile tekrar doğrula.",
   );
 }
 
-async function requestAnalysis(input: {
-  backendUrl: string;
-  code: string;
-  filename: string;
-  language: string;
-}): Promise<AnalyzeResponse> {
+async function requestAnalysis(
+  input: AnalysisInput,
+): Promise<AnalyzeResponse> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 300_000);
+
+  const timeoutMilliseconds =
+    input.mode === "fast" ? 30_000 : 300_000;
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    timeoutMilliseconds,
+  );
+
+  const endpoint =
+    input.mode === "fast"
+      ? "/v1/analyze/fast"
+      : "/v1/analyze/deep";
 
   try {
-    const response = await fetch(`${input.backendUrl}/v1/analyze`, {
+    const response = await fetch(`${input.backendUrl}${endpoint}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -268,7 +323,12 @@ async function requestAnalysis(input: {
     return JSON.parse(rawBody) as AnalyzeResponse;
   } catch (error: unknown) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("Analiz beş dakika sonunda zaman aşımına uğradı.");
+      const timeoutMessage =
+        input.mode === "fast"
+          ? "Fast Scan 30 saniye sonunda zaman aşımına uğradı."
+          : "Deep Analysis beş dakika sonunda zaman aşımına uğradı.";
+
+      throw new Error(timeoutMessage);
     }
 
     throw error;
@@ -279,10 +339,11 @@ async function requestAnalysis(input: {
 
 async function showAnalysisResult(
   result: AnalyzeResponse,
+  mode: AnalysisMode,
 ): Promise<void> {
   const document = await vscode.workspace.openTextDocument({
     language: "markdown",
-    content: buildMarkdownReport(result),
+    content: buildMarkdownReport(result, mode),
   });
 
   await vscode.window.showTextDocument(document, {
@@ -292,11 +353,13 @@ async function showAnalysisResult(
 }
 
 function findFirstPatch(result: AnalyzeResponse): string | undefined {
-  return result.findings.find(
-    (finding) =>
-      finding.proposed_patch &&
-      finding.proposed_patch.trim().length > 0,
-  )?.proposed_patch ?? undefined;
+  return (
+    result.findings.find(
+      (finding) =>
+        finding.proposed_patch &&
+        finding.proposed_patch.trim().length > 0,
+    )?.proposed_patch ?? undefined
+  );
 }
 
 function preserveIndentation(
@@ -316,17 +379,31 @@ function preserveIndentation(
     .join("\n");
 }
 
-function buildMarkdownReport(result: AnalyzeResponse): string {
+function buildMarkdownReport(
+  result: AnalyzeResponse,
+  mode: AnalysisMode,
+): string {
+  const modeLabel =
+    mode === "fast" ? "Fast Scan" : "Deep Analysis";
+
   const lines: string[] = [
-    "# Aegis Security Analysis",
+    `# Aegis ${modeLabel}`,
     "",
     `- **File:** ${result.filename}`,
     `- **Language:** ${result.language}`,
+    `- **Mode:** ${modeLabel}`,
     `- **Model:** ${result.model}`,
     `- **Scanner:** ${result.scanner}`,
     `- **Findings:** ${result.findings.length}`,
     "",
   ];
+
+  if (mode === "fast") {
+    lines.push(
+      "> Fast Scan yalnızca yerel scanner kanıtlarını gösterir. AI değerlendirmesi ve patch için Deep Analysis çalıştır.",
+      "",
+    );
+  }
 
   if (result.findings.length === 0) {
     lines.push(
@@ -377,6 +454,16 @@ function buildMarkdownReport(result: AnalyzeResponse): string {
       finding.recommended_fix,
       "",
     );
+
+    if (finding.false_positive_notes.length > 0) {
+      lines.push("### Notes", "");
+
+      finding.false_positive_notes.forEach((note) => {
+        lines.push(`- ${note}`);
+      });
+
+      lines.push("");
+    }
 
     if (finding.proposed_patch) {
       lines.push(
