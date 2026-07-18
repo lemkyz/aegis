@@ -25,6 +25,8 @@ class ScannerEvidence(BaseModel):
     line_start: int
     line_end: int
     code: str | None = None
+    cwe: list[str] = Field(default_factory=list)
+    owasp: list[str] = Field(default_factory=list)
 
 
 class SecurityFinding(BaseModel):

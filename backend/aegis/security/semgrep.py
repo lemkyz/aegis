@@ -99,13 +99,31 @@ class SemgrepScanner:
     @staticmethod
     def _normalize_rule_id(rule_id: str) -> str:
         marker = "aegis.python."
-
         marker_index = rule_id.find(marker)
 
         if marker_index >= 0:
             return rule_id[marker_index:]
 
         return rule_id
+
+    @staticmethod
+    def _normalize_metadata_list(value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [
+                str(item).strip()
+                for item in value
+                if str(item).strip()
+            ]
+
+        if value is None:
+            return []
+
+        normalized = str(value).strip()
+
+        if not normalized:
+            return []
+
+        return [normalized]
 
     @classmethod
     def _normalize_result(
@@ -125,23 +143,9 @@ class SemgrepScanner:
         if not code_lines or code_lines == "requires login":
             code_lines = None
 
-        cwe = metadata.get("cwe")
-
-        if isinstance(cwe, list):
-            cwe_text = ", ".join(
-                str(item) for item in cwe
-            )
-        elif cwe:
-            cwe_text = str(cwe)
-        else:
-            cwe_text = ""
-
         message = str(
             extra.get("message", "Semgrep finding")
         )
-
-        if cwe_text:
-            message = f"{message} ({cwe_text})"
 
         raw_rule_id = str(
             result.get("check_id", "unknown-rule")
@@ -160,4 +164,10 @@ class SemgrepScanner:
                 result.get("end", {}).get("line", 1)
             ),
             code=code_lines,
+            cwe=cls._normalize_metadata_list(
+                metadata.get("cwe")
+            ),
+            owasp=cls._normalize_metadata_list(
+                metadata.get("owasp")
+            ),
         )

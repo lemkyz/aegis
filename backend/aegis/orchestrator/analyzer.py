@@ -144,6 +144,8 @@ class SecurityAnalyzer:
                 )
             ],
             scanner_evidence=[evidence],
+            cwe=evidence.cwe,
+            owasp=evidence.owasp,
             vulnerable_lines=list(
                 range(
                     evidence.line_start,
