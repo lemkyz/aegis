@@ -1,5 +1,7 @@
 import asyncio
 import json
+import re
+from collections.abc import Iterable
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -14,6 +16,14 @@ from aegis.schemas.dependencies import (
 
 class OsvDependencyScanner:
     api_url = "https://api.osv.dev/v1/query"
+
+    _severity_rank: dict[DependencySeverity, int] = {
+        "unknown": 0,
+        "low": 1,
+        "medium": 2,
+        "high": 3,
+        "critical": 4,
+    }
 
     def __init__(self) -> None:
         self.name = "osv"
@@ -49,11 +59,15 @@ class OsvDependencyScanner:
 
             vulnerabilities.extend(result)
 
+        vulnerabilities = self._deduplicate_vulnerabilities(
+            vulnerabilities
+        )
+
         vulnerable_packages = len(
             {
                 (
                     item.ecosystem,
-                    item.package_name,
+                    item.package_name.lower(),
                     item.installed_version,
                 )
                 for item in vulnerabilities
@@ -179,10 +193,235 @@ class OsvDependencyScanner:
                 vulnerability,
                 package,
             ),
-            references=references[:10],
+            references=references[:20],
             published=vulnerability.get("published"),
             modified=vulnerability.get("modified"),
         )
+
+    @classmethod
+    def _deduplicate_vulnerabilities(
+        cls,
+        vulnerabilities: list[DependencyVulnerability],
+    ) -> list[DependencyVulnerability]:
+        groups: list[list[DependencyVulnerability]] = []
+
+        for vulnerability in vulnerabilities:
+            identifiers = cls._identifiers(vulnerability)
+
+            matching_indexes: list[int] = []
+
+            for index, group in enumerate(groups):
+                if not cls._same_package(
+                    vulnerability,
+                    group[0],
+                ):
+                    continue
+
+                group_identifiers = set().union(
+                    *(
+                        cls._identifiers(item)
+                        for item in group
+                    )
+                )
+
+                if identifiers & group_identifiers:
+                    matching_indexes.append(index)
+
+            if not matching_indexes:
+                groups.append([vulnerability])
+                continue
+
+            target_index = matching_indexes[0]
+            groups[target_index].append(vulnerability)
+
+            for merge_index in reversed(
+                matching_indexes[1:]
+            ):
+                groups[target_index].extend(
+                    groups.pop(merge_index)
+                )
+
+        merged = [
+            cls._merge_group(group)
+            for group in groups
+        ]
+
+        return sorted(
+            merged,
+            key=lambda item: (
+                -cls._severity_rank[item.severity],
+                item.package_name.lower(),
+                item.id,
+            ),
+        )
+
+    @staticmethod
+    def _same_package(
+        left: DependencyVulnerability,
+        right: DependencyVulnerability,
+    ) -> bool:
+        return (
+            left.ecosystem == right.ecosystem
+            and left.package_name.lower()
+            == right.package_name.lower()
+            and left.installed_version
+            == right.installed_version
+        )
+
+    @staticmethod
+    def _identifiers(
+        vulnerability: DependencyVulnerability,
+    ) -> set[str]:
+        return {
+            identifier.upper()
+            for identifier in [
+                vulnerability.id,
+                *vulnerability.aliases,
+            ]
+            if identifier.strip()
+        }
+
+    @classmethod
+    def _merge_group(
+        cls,
+        group: list[DependencyVulnerability],
+    ) -> DependencyVulnerability:
+        strongest = max(
+            group,
+            key=lambda item: (
+                cls._severity_rank[item.severity],
+                len(item.summary),
+                len(item.details),
+            ),
+        )
+
+        all_identifiers = sorted(
+            set().union(
+                *(
+                    cls._identifiers(item)
+                    for item in group
+                )
+            )
+        )
+
+        preferred_id = cls._preferred_identifier(
+            all_identifiers
+        )
+
+        aliases = [
+            identifier
+            for identifier in all_identifiers
+            if identifier != preferred_id
+        ]
+
+        fixed_versions = cls._sort_versions(
+            {
+                version
+                for item in group
+                for version in item.fixed_versions
+                if cls._looks_like_version(version)
+            }
+        )
+
+        references = list(
+            dict.fromkeys(
+                reference
+                for item in group
+                for reference in item.references
+            )
+        )
+
+        published_values = [
+            item.published
+            for item in group
+            if item.published
+        ]
+
+        modified_values = [
+            item.modified
+            for item in group
+            if item.modified
+        ]
+
+        return DependencyVulnerability(
+            id=preferred_id,
+            aliases=aliases,
+            package_name=strongest.package_name,
+            installed_version=strongest.installed_version,
+            ecosystem=strongest.ecosystem,
+            manifest=strongest.manifest,
+            direct=any(item.direct for item in group),
+            summary=strongest.summary,
+            details=strongest.details,
+            severity=strongest.severity,
+            fixed_versions=fixed_versions,
+            references=references[:20],
+            published=(
+                min(published_values)
+                if published_values
+                else None
+            ),
+            modified=(
+                max(modified_values)
+                if modified_values
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _preferred_identifier(
+        identifiers: Iterable[str],
+    ) -> str:
+        values = list(identifiers)
+
+        priorities = (
+            "GHSA-",
+            "CVE-",
+            "PYSEC-",
+            "OSV-",
+        )
+
+        for prefix in priorities:
+            candidates = sorted(
+                value
+                for value in values
+                if value.startswith(prefix)
+            )
+
+            if candidates:
+                return candidates[0]
+
+        return sorted(values)[0] if values else "UNKNOWN"
+
+    @staticmethod
+    def _looks_like_version(
+        value: str,
+    ) -> bool:
+        return bool(
+            re.fullmatch(
+                r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?",
+                value,
+            )
+        )
+
+    @staticmethod
+    def _sort_versions(
+        versions: set[str],
+    ) -> list[str]:
+        def version_key(value: str) -> tuple[Any, ...]:
+            parts = re.split(r"[.-]", value)
+
+            return tuple(
+                int(part)
+                if part.isdigit()
+                else part.lower()
+                for part in parts
+            )
+
+        try:
+            return sorted(versions, key=version_key)
+        except TypeError:
+            return sorted(versions)
 
     @staticmethod
     def _extract_severity(

@@ -75,6 +75,47 @@ interface WorkspaceScanSummary {
   errors: string[];
 }
 
+type DependencyEcosystem = "PyPI" | "npm";
+
+type DependencySeverity =
+  | "unknown"
+  | "low"
+  | "medium"
+  | "high"
+  | "critical";
+
+interface DependencyPackage {
+  name: string;
+  version: string;
+  ecosystem: DependencyEcosystem;
+  manifest: string;
+  direct: boolean;
+}
+
+interface DependencyVulnerability {
+  id: string;
+  aliases: string[];
+  package_name: string;
+  installed_version: string;
+  ecosystem: string;
+  manifest: string;
+  direct: boolean;
+  summary: string;
+  details: string;
+  severity: DependencySeverity;
+  fixed_versions: string[];
+  references: string[];
+  published: string | null;
+  modified: string | null;
+}
+
+interface DependencyScanResponse {
+  scanner: string;
+  packages_scanned: number;
+  vulnerable_packages: number;
+  vulnerabilities: DependencyVulnerability[];
+}
+
 let lastAnalysis: LastAnalysis | undefined;
 let latestWorkspaceScan: WorkspaceScanSummary | undefined;
 let diagnosticCollection: vscode.DiagnosticCollection | undefined;
@@ -118,6 +159,12 @@ export function activate(context: vscode.ExtensionContext): void {
     "aegis.scanWorkspace",
     scanEntireWorkspace,
   );
+
+  const scanDependenciesCommand =
+    vscode.commands.registerCommand(
+      "aegis.scanDependencies",
+      scanDependencies,
+    );
 
   const scanUncommittedChangesCommand =
     vscode.commands.registerCommand(
@@ -175,6 +222,7 @@ export function activate(context: vscode.ExtensionContext): void {
     fastScanCommand,
     fastScanCurrentFileCommand,
     scanWorkspaceCommand,
+    scanDependenciesCommand,
     scanUncommittedChangesCommand,
     scanStagedChangesCommand,
     deepAnalysisCommand,
@@ -485,6 +533,635 @@ async function openWorkspaceFinding(
     range,
     vscode.TextEditorRevealType.InCenter,
   );
+}
+
+async function scanDependencies(): Promise<void> {
+  const workspaceFolders =
+    vscode.workspace.workspaceFolders;
+
+  if (!workspaceFolders || workspaceFolders.length === 0) {
+    void vscode.window.showWarningMessage(
+      "Aegis: Open a workspace before scanning dependencies.",
+    );
+    return;
+  }
+
+  const configuration =
+    vscode.workspace.getConfiguration("aegis");
+
+  const backendUrl = configuration
+    .get<string>(
+      "backendUrl",
+      "http://127.0.0.1:8000",
+    )
+    .replace(/\/+$/, "");
+
+  try {
+    const packages = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "Aegis is discovering dependencies",
+        cancellable: false,
+      },
+      async () => discoverWorkspaceDependencies(),
+    );
+
+    if (packages.length === 0) {
+      void vscode.window.showInformationMessage(
+        "Aegis: No exact dependency versions were found. Use pinned requirements or a package lockfile.",
+      );
+      return;
+    }
+
+    const result = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title:
+          `Aegis is checking ${packages.length} dependency version(s)`,
+        cancellable: false,
+      },
+      async () =>
+        requestDependencyScan(
+          backendUrl,
+          packages,
+        ),
+    );
+
+    await showDependencyScanReport(
+      result,
+      packages,
+    );
+
+    if (result.vulnerabilities.length === 0) {
+      void vscode.window.showInformationMessage(
+        `Aegis Dependency Scan completed: ${result.packages_scanned} package(s) checked and no known vulnerabilities detected.`,
+      );
+      return;
+    }
+
+    void vscode.window.showWarningMessage(
+      `Aegis found ${result.vulnerabilities.length} known vulnerability record(s) across ${result.vulnerable_packages} package(s).`,
+      "Keep Report Open",
+    );
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unknown dependency scan error.";
+
+    void vscode.window.showErrorMessage(
+      `Aegis Dependency Scan failed: ${message}`,
+    );
+  }
+}
+
+async function discoverWorkspaceDependencies():
+  Promise<DependencyPackage[]> {
+  const manifestUris = await vscode.workspace.findFiles(
+    "**/{requirements.txt,package.json,package-lock.json}",
+    "**/{.git,node_modules,.venv,venv,dist,build,out,coverage}/**",
+    100,
+  );
+
+  const packages: DependencyPackage[] = [];
+
+  for (const uri of manifestUris) {
+    const document =
+      await vscode.workspace.openTextDocument(uri);
+
+    const filename = path.basename(uri.fsPath);
+    const relativePath =
+      vscode.workspace.asRelativePath(uri, false);
+    const content = document.getText();
+
+    if (filename === "requirements.txt") {
+      packages.push(
+        ...parseRequirementsTxt(
+          content,
+          relativePath,
+        ),
+      );
+
+      continue;
+    }
+
+    if (filename === "package-lock.json") {
+      packages.push(
+        ...parsePackageLock(
+          content,
+          relativePath,
+        ),
+      );
+
+      continue;
+    }
+
+    if (filename === "package.json") {
+      packages.push(
+        ...parsePackageJson(
+          content,
+          relativePath,
+        ),
+      );
+    }
+  }
+
+  return deduplicateDependencies(packages);
+}
+
+function parseRequirementsTxt(
+  content: string,
+  manifest: string,
+): DependencyPackage[] {
+  const packages: DependencyPackage[] = [];
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+
+    if (
+      !line ||
+      line.startsWith("#") ||
+      line.startsWith("-")
+    ) {
+      continue;
+    }
+
+    const withoutComment =
+      line.split(/\s+#/, 1)[0]?.trim() ?? "";
+
+    const match = withoutComment.match(
+      /^([A-Za-z0-9_.-]+)(?:\[[^\]]+\])?==([A-Za-z0-9_.+!-]+)$/,
+    );
+
+    if (!match) {
+      continue;
+    }
+
+    packages.push({
+      name: match[1],
+      version: match[2],
+      ecosystem: "PyPI",
+      manifest,
+      direct: true,
+    });
+  }
+
+  return packages;
+}
+
+function parsePackageJson(
+  content: string,
+  manifest: string,
+): DependencyPackage[] {
+  let payload: unknown;
+
+  try {
+    payload = JSON.parse(content);
+  } catch {
+    throw new Error(
+      `${manifest} contains invalid JSON.`,
+    );
+  }
+
+  if (!isRecord(payload)) {
+    return [];
+  }
+
+  const packages: DependencyPackage[] = [];
+
+  for (const field of [
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+  ]) {
+    const dependencies = payload[field];
+
+    if (!isRecord(dependencies)) {
+      continue;
+    }
+
+    for (const [name, rawVersion] of Object.entries(
+      dependencies,
+    )) {
+      if (typeof rawVersion !== "string") {
+        continue;
+      }
+
+      const version = normalizeExactNpmVersion(
+        rawVersion,
+      );
+
+      if (!version) {
+        continue;
+      }
+
+      packages.push({
+        name,
+        version,
+        ecosystem: "npm",
+        manifest,
+        direct: true,
+      });
+    }
+  }
+
+  return packages;
+}
+
+function parsePackageLock(
+  content: string,
+  manifest: string,
+): DependencyPackage[] {
+  let payload: unknown;
+
+  try {
+    payload = JSON.parse(content);
+  } catch {
+    throw new Error(
+      `${manifest} contains invalid JSON.`,
+    );
+  }
+
+  if (!isRecord(payload)) {
+    return [];
+  }
+
+  const packages: DependencyPackage[] = [];
+  const lockPackages = payload.packages;
+
+  if (isRecord(lockPackages)) {
+    for (const [packagePath, rawMetadata] of Object.entries(
+      lockPackages,
+    )) {
+      if (
+        !packagePath.startsWith("node_modules/") ||
+        !isRecord(rawMetadata)
+      ) {
+        continue;
+      }
+
+      const name = packagePath.replace(
+        /^node_modules\//,
+        "",
+      );
+
+      const version = rawMetadata.version;
+
+      if (
+        !name ||
+        typeof version !== "string" ||
+        !isExactVersion(version)
+      ) {
+        continue;
+      }
+
+      packages.push({
+        name,
+        version,
+        ecosystem: "npm",
+        manifest,
+        direct: false,
+      });
+    }
+
+    return packages;
+  }
+
+  const dependencies = payload.dependencies;
+
+  if (isRecord(dependencies)) {
+    collectLegacyPackageLockDependencies(
+      dependencies,
+      manifest,
+      packages,
+    );
+  }
+
+  return packages;
+}
+
+function collectLegacyPackageLockDependencies(
+  dependencies: Record<string, unknown>,
+  manifest: string,
+  output: DependencyPackage[],
+): void {
+  for (const [name, rawMetadata] of Object.entries(
+    dependencies,
+  )) {
+    if (!isRecord(rawMetadata)) {
+      continue;
+    }
+
+    const version = rawMetadata.version;
+
+    if (
+      typeof version === "string" &&
+      isExactVersion(version)
+    ) {
+      output.push({
+        name,
+        version,
+        ecosystem: "npm",
+        manifest,
+        direct: false,
+      });
+    }
+
+    const nestedDependencies =
+      rawMetadata.dependencies;
+
+    if (isRecord(nestedDependencies)) {
+      collectLegacyPackageLockDependencies(
+        nestedDependencies,
+        manifest,
+        output,
+      );
+    }
+  }
+}
+
+function normalizeExactNpmVersion(
+  rawVersion: string,
+): string | undefined {
+  const trimmed = rawVersion.trim();
+
+  if (
+    trimmed.startsWith("workspace:") ||
+    trimmed.startsWith("file:") ||
+    trimmed.startsWith("git+") ||
+    trimmed.startsWith("http:") ||
+    trimmed.startsWith("https:")
+  ) {
+    return undefined;
+  }
+
+  const normalized = trimmed.startsWith("=")
+    ? trimmed.slice(1)
+    : trimmed;
+
+  return isExactVersion(normalized)
+    ? normalized
+    : undefined;
+}
+
+function isExactVersion(
+  value: string,
+): boolean {
+  return /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(
+    value,
+  );
+}
+
+function deduplicateDependencies(
+  packages: DependencyPackage[],
+): DependencyPackage[] {
+  const deduplicated =
+    new Map<string, DependencyPackage>();
+
+  for (const packageItem of packages) {
+    const key = [
+      packageItem.ecosystem,
+      packageItem.name.toLowerCase(),
+      packageItem.version,
+    ].join(":");
+
+    const existing = deduplicated.get(key);
+
+    if (!existing || packageItem.direct) {
+      deduplicated.set(
+        key,
+        packageItem,
+      );
+    }
+  }
+
+  return Array.from(
+    deduplicated.values(),
+  ).sort((left, right) =>
+    `${left.ecosystem}:${left.name}`.localeCompare(
+      `${right.ecosystem}:${right.name}`,
+    ),
+  );
+}
+
+function isRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}
+
+async function requestDependencyScan(
+  backendUrl: string,
+  packages: DependencyPackage[],
+): Promise<DependencyScanResponse> {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    180_000,
+  );
+
+  try {
+    const response = await fetch(
+      `${backendUrl}/v1/dependencies/scan`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          packages,
+        }),
+        signal: controller.signal,
+      },
+    );
+
+    const rawBody = await response.text();
+
+    if (!response.ok) {
+      let detail = rawBody;
+
+      try {
+        const payload = JSON.parse(rawBody) as {
+          detail?: string;
+        };
+
+        detail = payload.detail ?? rawBody;
+      } catch {
+        // Preserve raw response body.
+      }
+
+      throw new Error(
+        `Backend returned HTTP ${response.status}: ${detail}`,
+      );
+    }
+
+    return JSON.parse(
+      rawBody,
+    ) as DependencyScanResponse;
+  } catch (error: unknown) {
+    if (
+      error instanceof Error &&
+      error.name === "AbortError"
+    ) {
+      throw new Error(
+        "Dependency Scan timed out after three minutes.",
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function showDependencyScanReport(
+  result: DependencyScanResponse,
+  packages: DependencyPackage[],
+): Promise<void> {
+  const report = buildDependencyScanReport(
+    result,
+    packages,
+  );
+
+  const reportDocument =
+    await vscode.workspace.openTextDocument({
+      language: "markdown",
+      content: report,
+    });
+
+  await vscode.window.showTextDocument(
+    reportDocument,
+    {
+      preview: true,
+      viewColumn: vscode.ViewColumn.Beside,
+    },
+  );
+}
+
+function buildDependencyScanReport(
+  result: DependencyScanResponse,
+  packages: DependencyPackage[],
+): string {
+  const severityOrder:
+    Record<DependencySeverity, number> = {
+      critical: 0,
+      high: 1,
+      medium: 2,
+      low: 3,
+      unknown: 4,
+    };
+
+  const vulnerabilities = [
+    ...result.vulnerabilities,
+  ].sort((left, right) => {
+    const severityDifference =
+      severityOrder[left.severity] -
+      severityOrder[right.severity];
+
+    if (severityDifference !== 0) {
+      return severityDifference;
+    }
+
+    return left.package_name.localeCompare(
+      right.package_name,
+    );
+  });
+
+  const countSeverity = (
+    severity: DependencySeverity,
+  ): number =>
+    vulnerabilities.filter(
+      (item) => item.severity === severity,
+    ).length;
+
+  const manifests = Array.from(
+    new Set(
+      packages.map(
+        (packageItem) => packageItem.manifest,
+      ),
+    ),
+  );
+
+  const lines: string[] = [
+    "# Aegis Dependency Security Scan",
+    "",
+    `- **Scanner:** ${result.scanner.toUpperCase()}`,
+    `- **Packages checked:** ${result.packages_scanned}`,
+    `- **Vulnerable packages:** ${result.vulnerable_packages}`,
+    `- **Vulnerability records:** ${vulnerabilities.length}`,
+    `- **Manifests:** ${manifests.length}`,
+    "",
+    "## Severity Summary",
+    "",
+    `- **Critical:** ${countSeverity("critical")}`,
+    `- **High:** ${countSeverity("high")}`,
+    `- **Medium:** ${countSeverity("medium")}`,
+    `- **Low:** ${countSeverity("low")}`,
+    `- **Unknown:** ${countSeverity("unknown")}`,
+    "",
+  ];
+
+  if (vulnerabilities.length === 0) {
+    lines.push(
+      "No known dependency vulnerability was found for the exact versions checked.",
+      "",
+      "> This result depends on available advisory data and does not guarantee that every dependency is secure.",
+    );
+
+    return lines.join("\n");
+  }
+
+  lines.push("## Vulnerabilities", "");
+
+  vulnerabilities.forEach(
+    (vulnerability, index) => {
+      const aliases =
+        vulnerability.aliases.length > 0
+          ? vulnerability.aliases.join(", ")
+          : "None";
+
+      const fixedVersions =
+        vulnerability.fixed_versions.length > 0
+          ? vulnerability.fixed_versions.join(", ")
+          : "No fixed version specified";
+
+      lines.push(
+        `### ${index + 1}. ${vulnerability.package_name} ${vulnerability.installed_version}`,
+        "",
+        `- **Severity:** ${vulnerability.severity.toUpperCase()}`,
+        `- **Advisory:** ${vulnerability.id}`,
+        `- **Aliases:** ${aliases}`,
+        `- **Ecosystem:** ${vulnerability.ecosystem}`,
+        `- **Manifest:** \`${vulnerability.manifest}\``,
+        `- **Direct dependency:** ${vulnerability.direct ? "YES" : "NO"}`,
+        `- **Fixed version(s):** ${fixedVersions}`,
+        "",
+        vulnerability.summary ||
+          "Known dependency vulnerability.",
+        "",
+      );
+
+      if (vulnerability.references.length > 0) {
+        lines.push("#### References", "");
+
+        for (const reference of
+          vulnerability.references.slice(0, 5)) {
+          lines.push(`- ${reference}`);
+        }
+
+        lines.push("");
+      }
+
+      lines.push("---", "");
+    },
+  );
+
+  return lines.join("\n");
 }
 
 type GitScanMode = "uncommitted" | "staged";

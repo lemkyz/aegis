@@ -1,0 +1,7 @@
+{
+  "name": "aegis-vulnerable-dependency-demo",
+  "private": true,
+  "dependencies": {
+    "lodash": "4.17.20"
+  }
+}

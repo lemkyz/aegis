@@ -36,6 +36,11 @@
         "category": "Aegis"
       },
       {
+        "command": "aegis.scanDependencies",
+        "title": "Aegis: Scan Dependencies",
+        "category": "Aegis"
+      },
+      {
         "command": "aegis.deepAnalyzeSelectedCode",
         "title": "Aegis: Deep Analysis Selected Code",
         "category": "Aegis"
