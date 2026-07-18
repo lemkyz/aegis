@@ -323,42 +323,43 @@ async function analyzeSelectedCode(mode: AnalysisMode): Promise<void> {
 async function applySecureFix(): Promise<void> {
   if (!lastAnalysis) {
     void vscode.window.showWarningMessage(
-      "Aegis: Önce Run Deep Analysis.",
+      "Aegis: Run Deep Analysis before applying a fix.",
     );
     return;
   }
 
   if (lastAnalysis.mode !== "deep") {
     void vscode.window.showWarningMessage(
-      "Aegis: Fast Scan patch üretmez. Önce Run Deep Analysis.",
+      "Aegis: Fast Scan does not produce patches. Run Deep Analysis first.",
     );
     return;
   }
 
-  const editor = vscode.window.activeTextEditor;
+  const analyzedState = lastAnalysis;
+  const documentUri = vscode.Uri.parse(
+    analyzedState.documentUri,
+  );
 
-  if (!editor) {
-    void vscode.window.showErrorMessage(
-      "Aegis: The editor for applying the fix was not found.",
-    );
-    return;
-  }
+  const document = await vscode.workspace.openTextDocument(
+    documentUri,
+  );
 
-  if (editor.document.uri.toString() !== lastAnalysis.documentUri) {
+  const editor = await vscode.window.showTextDocument(
+    document,
+    {
+      preview: false,
+      viewColumn: vscode.ViewColumn.One,
+    },
+  );
+
+  if (document.version !== analyzedState.documentVersion) {
     void vscode.window.showWarningMessage(
-      "Aegis: The analyzed file is not currently open.",
+      "Aegis: The file changed after analysis. Run Deep Analysis again.",
     );
     return;
   }
 
-  if (editor.document.version !== lastAnalysis.documentVersion) {
-    void vscode.window.showWarningMessage(
-      "Aegis: The file changed after analysis. Run the analysis again.",
-    );
-    return;
-  }
-
-  const patch = findFirstPatch(lastAnalysis.response);
+  const patch = findFirstPatch(analyzedState.response);
 
   if (!patch) {
     void vscode.window.showWarningMessage(
@@ -367,24 +368,42 @@ async function applySecureFix(): Promise<void> {
     return;
   }
 
-  const originalCode = editor.document.getText(lastAnalysis.selection);
+  const originalSelectionCode = document.getText(
+    analyzedState.selection,
+  );
 
-  const previewDocument = await vscode.workspace.openTextDocument({
-    language: editor.document.languageId,
-    content: patch,
+  const secureSelectionCode = preserveIndentation(
+    originalSelectionCode,
+    patch,
+  );
+
+  const originalDocument = await vscode.workspace.openTextDocument({
+    language: document.languageId,
+    content: originalSelectionCode,
   });
 
-  await vscode.window.showTextDocument(previewDocument, {
-    preview: true,
-    viewColumn: vscode.ViewColumn.Beside,
+  const secureDocument = await vscode.workspace.openTextDocument({
+    language: document.languageId,
+    content: secureSelectionCode,
   });
+
+  await vscode.commands.executeCommand(
+    "vscode.diff",
+    originalDocument.uri,
+    secureDocument.uri,
+    `Aegis Secure Fix Preview — ${path.basename(document.fileName)}`,
+    {
+      preview: true,
+      viewColumn: vscode.ViewColumn.Beside,
+    },
+  );
 
   const decision = await vscode.window.showWarningMessage(
-    "Aegis will replace the selected code with the proposed secure patch.",
+    "Review the Aegis secure fix in the diff editor.",
     {
       modal: true,
       detail:
-        "The change will only be applied to the analyzed selection.",
+        "Apply Fix replaces only the code selection analyzed by Aegis. The file will then be saved and scanned again automatically.",
     },
     "Apply Fix",
     "Cancel",
@@ -397,9 +416,9 @@ async function applySecureFix(): Promise<void> {
   const edit = new vscode.WorkspaceEdit();
 
   edit.replace(
-    editor.document.uri,
-    lastAnalysis.selection,
-    preserveIndentation(originalCode, patch),
+    document.uri,
+    analyzedState.selection,
+    secureSelectionCode,
   );
 
   const applied = await vscode.workspace.applyEdit(edit);
@@ -411,11 +430,89 @@ async function applySecureFix(): Promise<void> {
     return;
   }
 
-  await editor.document.save();
+  const saved = await document.save();
+
+  if (!saved) {
+    void vscode.window.showWarningMessage(
+      "Aegis: The fix was applied, but the file could not be saved.",
+    );
+    return;
+  }
+
+  diagnosticCollection?.delete(document.uri);
   lastAnalysis = undefined;
 
-  void vscode.window.showInformationMessage(
-    "Aegis: The secure fix was applied. Verify it with Fast Scan.",
+  const configuration =
+    vscode.workspace.getConfiguration("aegis");
+
+  const backendUrl = configuration
+    .get<string>(
+      "backendUrl",
+      "http://127.0.0.1:8000",
+    )
+    .replace(/\/+$/, "");
+
+  const verificationResult =
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "Aegis is verifying the secure fix",
+        cancellable: false,
+      },
+      async () =>
+        requestAnalysis({
+          backendUrl,
+          code: document.getText(),
+          filename:
+            path.basename(document.fileName) || "unknown.py",
+          language: normalizeLanguage(document.languageId),
+          mode: "fast",
+        }),
+    );
+
+  updateDiagnostics(
+    document,
+    verificationResult,
+    0,
+  );
+
+  lastAnalysis = {
+    documentUri: document.uri.toString(),
+    documentVersion: document.version,
+    selection: new vscode.Range(
+      document.positionAt(0),
+      document.positionAt(document.getText().length),
+    ),
+    response: verificationResult,
+    mode: "fast",
+  };
+
+  await showAnalysisResult(
+    verificationResult,
+    "fast",
+  );
+
+  if (verificationResult.findings.length === 0) {
+    void vscode.window.showInformationMessage(
+      "Aegis Fix Status: VERIFIED — the vulnerability was not detected after rescanning.",
+    );
+    return;
+  }
+
+  void vscode.window.showWarningMessage(
+    `Aegis Fix Status: STILL VULNERABLE — ${verificationResult.findings.length} finding(s) remain after rescanning.`,
+    "Open Problems",
+  ).then((action) => {
+    if (action === "Open Problems") {
+      void vscode.commands.executeCommand(
+        "workbench.actions.view.problems",
+      );
+    }
+  });
+
+  editor.revealRange(
+    analyzedState.selection,
+    vscode.TextEditorRevealType.InCenter,
   );
 }
 
