@@ -95,6 +95,16 @@ Deterministic scanner evidence:
 
 {scanner_json}
 
+Important secret-handling rules:
+
+- Values such as <AEGIS_REDACTED_SECRET_1> are protected placeholders.
+- Never attempt to reconstruct, guess, repeat, or transform their original values.
+- Do not preserve a redacted placeholder inside proposed_patch.
+- When remediating a hardcoded secret, replace it with an environment variable,
+  secret-manager lookup, or another secure runtime configuration mechanism.
+- Do not include credentials, tokens, private keys, or authorization values
+  in summaries, evidence, recommendations, or patches.
+
 Analyze the following source code and determine whether each
 scanner result represents a genuine vulnerability.
 

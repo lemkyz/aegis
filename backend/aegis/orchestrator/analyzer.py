@@ -1,4 +1,5 @@
 from aegis.models.nvidia import NvidiaModelClient
+from aegis.security.redaction import SecretRedactor
 from aegis.schemas.analysis import (
     AnalyzeCodeRequest,
     AnalyzeCodeResponse,
@@ -12,6 +13,7 @@ class SecurityAnalyzer:
     def __init__(self) -> None:
         self.model_client = NvidiaModelClient()
         self.scanner = SemgrepScanner()
+        self.redactor = SecretRedactor()
 
     async def fast_analyze(
         self,
@@ -30,10 +32,22 @@ class SecurityAnalyzer:
             f"{len(scanner_evidence)} evidence item(s) found."
         )
 
+        redaction_session = self.redactor.create_session()
+
+        safe_scanner_evidence = (
+            redaction_session.redact_evidence_list(
+                scanner_evidence
+            )
+        )
+
         findings = [
             self._scanner_evidence_to_finding(evidence)
-            for evidence in scanner_evidence
+            for evidence in safe_scanner_evidence
         ]
+
+        findings = redaction_session.redact_findings(
+            findings
+        )
 
         return AnalyzeCodeResponse(
             filename=request.filename,
@@ -78,10 +92,25 @@ class SecurityAnalyzer:
                 findings=[],
             )
 
+        redaction_session = self.redactor.create_session()
+
+        safe_scanner_evidence = (
+            redaction_session.redact_evidence_list(
+                scanner_evidence
+            )
+        )
+
         relevant_code = self._build_relevant_context(
             code=request.code,
             scanner_evidence=scanner_evidence,
             context_lines=20,
+        )
+
+        safe_relevant_code = (
+            redaction_session.redact_text(
+                relevant_code
+            )
+            or relevant_code
         )
 
         original_line_count = len(request.code.splitlines())
@@ -96,10 +125,14 @@ class SecurityAnalyzer:
 
         try:
             findings = await self.model_client.analyze_security(
-                code=relevant_code,
+                code=safe_relevant_code,
                 language=request.language,
                 filename=request.filename,
-                scanner_evidence=scanner_evidence,
+                scanner_evidence=safe_scanner_evidence,
+            )
+
+            findings = redaction_session.redact_findings(
+                findings
             )
         except Exception as exc:
             print(
@@ -109,8 +142,12 @@ class SecurityAnalyzer:
 
             findings = [
                 self._scanner_evidence_to_finding(evidence)
-                for evidence in scanner_evidence
+                for evidence in safe_scanner_evidence
             ]
+
+            findings = redaction_session.redact_findings(
+                findings
+            )
 
             for finding in findings:
                 finding.false_positive_notes.append(
