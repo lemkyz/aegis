@@ -38,12 +38,15 @@ exports.deactivate = deactivate;
 const path = __importStar(require("node:path"));
 const vscode = __importStar(require("vscode"));
 let lastAnalysis;
+let diagnosticCollection;
 function activate(context) {
+    diagnosticCollection =
+        vscode.languages.createDiagnosticCollection("aegis");
     const fastScanCommand = vscode.commands.registerCommand("aegis.fastScanSelectedCode", async () => analyzeSelectedCode("fast"));
     const fastScanCurrentFileCommand = vscode.commands.registerCommand("aegis.fastScanCurrentFile", fastScanCurrentFile);
     const deepAnalysisCommand = vscode.commands.registerCommand("aegis.deepAnalyzeSelectedCode", async () => analyzeSelectedCode("deep"));
     const applyFixCommand = vscode.commands.registerCommand("aegis.applySecureFix", applySecureFix);
-    context.subscriptions.push(fastScanCommand, fastScanCurrentFileCommand, deepAnalysisCommand, applyFixCommand);
+    context.subscriptions.push(diagnosticCollection, fastScanCommand, fastScanCurrentFileCommand, deepAnalysisCommand, applyFixCommand);
 }
 async function fastScanCurrentFile() {
     const editor = vscode.window.activeTextEditor;
@@ -82,6 +85,7 @@ async function fastScanCurrentFile() {
             response: result,
             mode: "fast",
         };
+        updateDiagnostics(document, result, 0);
         await showAnalysisResult(result, "fast");
         if (result.findings.length > 0) {
             const action = await vscode.window.showWarningMessage(`Aegis Fast Scan found ${result.findings.length} suspicious finding(s).`, "Run Deep Analysis", "Keep Report Open");
@@ -139,6 +143,7 @@ async function analyzeSelectedCode(mode) {
             response: result,
             mode,
         };
+        updateDiagnostics(document, result, selection.start.line);
         await showAnalysisResult(result, mode);
         if (mode === "fast" && result.findings.length > 0) {
             const action = await vscode.window.showWarningMessage(`Aegis Fast Scan ${result.findings.length} suspicious finding(s).`, "Run Deep Analysis", "Keep Report Open");
@@ -255,6 +260,61 @@ async function requestAnalysis(input) {
         clearTimeout(timeout);
     }
 }
+function updateDiagnostics(document, result, lineOffset) {
+    if (!diagnosticCollection) {
+        return;
+    }
+    const diagnostics = [];
+    for (const finding of result.findings) {
+        const evidenceItems = finding.scanner_evidence.length > 0
+            ? finding.scanner_evidence
+            : [
+                {
+                    line_start: finding.vulnerable_lines[0] ?? 1,
+                    line_end: finding.vulnerable_lines.at(-1) ?? 1,
+                },
+            ];
+        for (const evidence of evidenceItems) {
+            const startLine = clampLine(evidence.line_start - 1 + lineOffset, document);
+            const endLine = clampLine(evidence.line_end - 1 + lineOffset, document);
+            const endCharacter = document.lineAt(endLine).text.length;
+            const range = new vscode.Range(new vscode.Position(startLine, 0), new vscode.Position(endLine, endCharacter));
+            const diagnostic = new vscode.Diagnostic(range, buildDiagnosticMessage(finding), mapDiagnosticSeverity(finding.severity));
+            diagnostic.source = "Aegis";
+            diagnostic.code =
+                finding.cwe[0] ??
+                    finding.scanner_evidence[0]?.rule_id ??
+                    "security";
+            diagnostics.push(diagnostic);
+        }
+    }
+    diagnosticCollection.set(document.uri, diagnostics);
+}
+function buildDiagnosticMessage(finding) {
+    const metadata = [
+        finding.severity.toUpperCase(),
+        finding.cwe[0],
+        finding.owasp[0],
+    ].filter(Boolean);
+    return `${metadata.join(" · ")} — ${finding.title}`;
+}
+function mapDiagnosticSeverity(severity) {
+    switch (severity) {
+        case "critical":
+        case "high":
+            return vscode.DiagnosticSeverity.Error;
+        case "medium":
+            return vscode.DiagnosticSeverity.Warning;
+        case "low":
+            return vscode.DiagnosticSeverity.Information;
+        case "info":
+        default:
+            return vscode.DiagnosticSeverity.Hint;
+    }
+}
+function clampLine(line, document) {
+    return Math.max(0, Math.min(line, document.lineCount - 1));
+}
 async function showAnalysisResult(result, mode) {
     const document = await vscode.workspace.openTextDocument({
         language: "markdown",
@@ -340,6 +400,8 @@ function normalizeLanguage(languageId) {
     return supported[languageId] ?? languageId;
 }
 function deactivate() {
+    diagnosticCollection?.clear();
+    diagnosticCollection = undefined;
     lastAnalysis = undefined;
 }
 //# sourceMappingURL=extension.js.map
