@@ -16,8 +16,8 @@ class NvidiaModelClient:
         self.client = AsyncOpenAI(
             api_key=settings.nvidia_api_key,
             base_url=settings.nvidia_base_url,
-            timeout=240.0,
-            max_retries=2,
+            timeout=settings.ai_request_timeout_seconds,
+            max_retries=settings.ai_max_retries,
         )
 
     async def analyze_security(
@@ -106,7 +106,7 @@ scanner result represents a genuine vulnerability.
         response = await self.client.chat.completions.create(
             model=self.model,
             temperature=0.1,
-            max_tokens=800,
+            max_tokens=1600,
             messages=[
                 {
                     "role": "system",

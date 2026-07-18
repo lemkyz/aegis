@@ -17,7 +17,7 @@ class SecurityAnalyzer:
         self,
         request: AnalyzeCodeRequest,
     ) -> AnalyzeCodeResponse:
-        print("1. Fast Scan: Semgrep başlıyor...")
+        print("1. Fast Scan: Semgrep starting...")
 
         scanner_evidence = await self.scanner.scan(
             code=request.code,
@@ -26,8 +26,8 @@ class SecurityAnalyzer:
         )
 
         print(
-            f"2. Fast Scan tamamlandı. "
-            f"{len(scanner_evidence)} kanıt bulundu."
+            f"2. Fast Scan completed. "
+            f"{len(scanner_evidence)} evidence item(s) found."
         )
 
         findings = [
@@ -47,7 +47,7 @@ class SecurityAnalyzer:
         self,
         request: AnalyzeCodeRequest,
     ) -> AnalyzeCodeResponse:
-        print("1. Deep Analysis: Semgrep başlıyor...")
+        print("1. Deep Analysis: Semgrep starting...")
 
         scanner_evidence = await self.scanner.scan(
             code=request.code,
@@ -56,14 +56,14 @@ class SecurityAnalyzer:
         )
 
         print(
-            f"2. Semgrep bitti. "
-            f"{len(scanner_evidence)} kanıt bulundu."
+            f"2. Semgrep completed. "
+            f"{len(scanner_evidence)} evidence item(s) found."
         )
 
         if not scanner_evidence:
             print(
-                "3. Semgrep bulgusu yok. "
-                "NVIDIA modeli çağrılmadan analiz tamamlandı."
+                "3. No scanner evidence found. "
+                "The NVIDIA model was not called."
             )
 
             return AnalyzeCodeResponse(
@@ -74,18 +74,57 @@ class SecurityAnalyzer:
                 findings=[],
             )
 
-        print("3. NVIDIA derin analizi başlıyor...")
-
-        findings = await self.model_client.analyze_security(
+        relevant_code = self._build_relevant_context(
             code=request.code,
-            language=request.language,
-            filename=request.filename,
             scanner_evidence=scanner_evidence,
+            context_lines=20,
         )
 
+        original_line_count = len(request.code.splitlines())
+        relevant_line_count = len(relevant_code.splitlines())
+
         print(
-            f"4. NVIDIA analizi bitti. "
-            f"{len(findings)} bulgu bulundu."
+            "3. Security context prepared: "
+            f"{relevant_line_count}/{original_line_count} lines "
+            "will be sent to the NVIDIA model."
+        )
+        print("4. NVIDIA deep analysis starting...")
+
+        try:
+            findings = await self.model_client.analyze_security(
+                code=relevant_code,
+                language=request.language,
+                filename=request.filename,
+                scanner_evidence=scanner_evidence,
+            )
+        except Exception as exc:
+            print(
+                "5. NVIDIA analysis failed. "
+                f"Falling back to scanner findings: {exc}"
+            )
+
+            findings = [
+                self._scanner_evidence_to_finding(evidence)
+                for evidence in scanner_evidence
+            ]
+
+            for finding in findings:
+                finding.false_positive_notes.append(
+                    "AI review was unavailable or returned an invalid response. "
+                    "This result is based on deterministic scanner evidence."
+                )
+
+            return AnalyzeCodeResponse(
+                filename=request.filename,
+                language=request.language,
+                model=f"{self.model_client.model} (fallback)",
+                scanner=self.scanner.name,
+                findings=findings,
+            )
+
+        print(
+            f"5. NVIDIA analysis completed. "
+            f"{len(findings)} finding(s) returned."
         )
 
         return AnalyzeCodeResponse(
@@ -101,9 +140,72 @@ class SecurityAnalyzer:
         request: AnalyzeCodeRequest,
     ) -> AnalyzeCodeResponse:
         """
-        Backward-compatible method used by the existing VS Code extension.
+        Backward-compatible method used by older extension versions.
         """
         return await self.deep_analyze(request)
+
+    @staticmethod
+    def _build_relevant_context(
+        *,
+        code: str,
+        scanner_evidence: list[ScannerEvidence],
+        context_lines: int,
+    ) -> str:
+        source_lines = code.splitlines()
+
+        if not source_lines:
+            return code
+
+        ranges: list[tuple[int, int]] = []
+
+        for evidence in scanner_evidence:
+            start_index = max(
+                evidence.line_start - 1 - context_lines,
+                0,
+            )
+            end_index = min(
+                evidence.line_end + context_lines,
+                len(source_lines),
+            )
+
+            ranges.append((start_index, end_index))
+
+        ranges.sort()
+
+        merged_ranges: list[tuple[int, int]] = []
+
+        for start_index, end_index in ranges:
+            if not merged_ranges:
+                merged_ranges.append((start_index, end_index))
+                continue
+
+            previous_start, previous_end = merged_ranges[-1]
+
+            if start_index <= previous_end:
+                merged_ranges[-1] = (
+                    previous_start,
+                    max(previous_end, end_index),
+                )
+            else:
+                merged_ranges.append((start_index, end_index))
+
+        sections: list[str] = []
+
+        for start_index, end_index in merged_ranges:
+            start_line = start_index + 1
+            end_line = end_index
+
+            excerpt = "\n".join(
+                source_lines[start_index:end_index]
+            )
+
+            sections.append(
+                f"--- ORIGINAL FILE LINES "
+                f"{start_line}-{end_line} ---\n"
+                f"{excerpt}"
+            )
+
+        return "\n\n".join(sections)
 
     @staticmethod
     def _scanner_evidence_to_finding(
@@ -120,16 +222,13 @@ class SecurityAnalyzer:
             "medium",
         )
 
-        title = evidence.rule_id.replace(
-            "aegis.python.",
-            "",
-        ).replace(
-            ".",
-            " ",
-        ).replace(
-            "-",
-            " ",
-        ).title()
+        title = (
+            evidence.rule_id
+            .replace("aegis.python.", "")
+            .replace(".", " ")
+            .replace("-", " ")
+            .title()
+        )
 
         return SecurityFinding(
             title=title,
