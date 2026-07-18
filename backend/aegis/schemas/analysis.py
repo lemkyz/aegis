@@ -18,6 +18,17 @@ class AnalyzeCodeRequest(BaseModel):
     filename: str = Field(default="unknown.py", max_length=500)
 
 
+class SecretClassification(BaseModel):
+    provider: str
+    secret_type: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    likely_placeholder: bool = False
+    rotation_required: bool = False
+    fingerprint: str | None = None
+    entropy: float = Field(default=0.0, ge=0.0)
+    remediation: str
+
+
 class ScannerEvidence(BaseModel):
     tool: str
     rule_id: str
@@ -29,6 +40,7 @@ class ScannerEvidence(BaseModel):
     code: str | None = None
     cwe: list[str] = Field(default_factory=list)
     owasp: list[str] = Field(default_factory=list)
+    secret: SecretClassification | None = None
 
 
 class SecurityFinding(BaseModel):

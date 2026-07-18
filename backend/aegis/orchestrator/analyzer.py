@@ -1,5 +1,6 @@
 from aegis.models.nvidia import NvidiaModelClient
 from aegis.security.redaction import SecretRedactor
+from aegis.security.secrets import SecretIntelligenceEngine
 from aegis.schemas.analysis import (
     AnalyzeCodeRequest,
     AnalyzeCodeResponse,
@@ -14,6 +15,7 @@ class SecurityAnalyzer:
         self.model_client = NvidiaModelClient()
         self.scanner = SemgrepScanner()
         self.redactor = SecretRedactor()
+        self.secret_engine = SecretIntelligenceEngine()
 
     async def fast_analyze(
         self,
@@ -25,6 +27,12 @@ class SecurityAnalyzer:
             code=request.code,
             language=request.language,
             filename=request.filename,
+        )
+
+        scanner_evidence = (
+            self.secret_engine.enrich_evidence_list(
+                scanner_evidence
+            )
         )
 
         print(
@@ -69,6 +77,12 @@ class SecurityAnalyzer:
             code=request.code,
             language=request.language,
             filename=request.filename,
+        )
+
+        scanner_evidence = (
+            self.secret_engine.enrich_evidence_list(
+                scanner_evidence
+            )
         )
 
         print(
@@ -267,6 +281,41 @@ class SecurityAnalyzer:
             "medium",
         )
 
+        confidence = 0.85
+        recommended_fix = (
+            "Review the flagged code and run Deep Analysis "
+            "for a context-aware remediation recommendation."
+        )
+        additional_notes: list[str] = []
+
+        if evidence.secret:
+            confidence = evidence.secret.confidence
+            recommended_fix = evidence.secret.remediation
+
+            additional_notes.append(
+                "Secret classification: "
+                f"{evidence.secret.provider} / "
+                f"{evidence.secret.secret_type}."
+            )
+
+            if evidence.secret.fingerprint:
+                additional_notes.append(
+                    "Protected fingerprint: "
+                    f"{evidence.secret.fingerprint}."
+                )
+
+            if evidence.secret.likely_placeholder:
+                severity = "low"
+                additional_notes.append(
+                    "The value appears to be example, test, or "
+                    "placeholder data. Confirm that no production "
+                    "credential is present."
+                )
+            elif evidence.secret.rotation_required:
+                additional_notes.append(
+                    "Credential rotation is recommended."
+                )
+
         rule_parts = evidence.rule_id.split(".")
 
         if (
@@ -284,7 +333,7 @@ class SecurityAnalyzer:
         return SecurityFinding(
             title=title,
             severity=severity,
-            confidence=0.85,
+            confidence=confidence,
             summary=evidence.message,
             evidence=[
                 (
@@ -307,11 +356,9 @@ class SecurityAnalyzer:
                     "This is a scanner-only result. "
                     "Run Deep Analysis for AI review, "
                     "context evaluation, and a proposed patch."
-                )
+                ),
+                *additional_notes,
             ],
-            recommended_fix=(
-                "Review the flagged code and run Deep Analysis "
-                "for a context-aware remediation recommendation."
-            ),
+            recommended_fix=recommended_fix,
             proposed_patch=None,
         )

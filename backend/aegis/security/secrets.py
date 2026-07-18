@@ -1,0 +1,365 @@
+import hashlib
+import hmac
+import math
+import re
+import secrets
+from collections import Counter
+from collections.abc import Iterable
+
+from aegis.schemas.analysis import (
+    ScannerEvidence,
+    SecretClassification,
+)
+
+
+class SecretIntelligenceEngine:
+    """
+    Classifies secret scanner evidence before redaction.
+
+    Raw secret values are used only in memory for classification and
+    fingerprint generation. They are never stored in API responses.
+    """
+
+    _process_fingerprint_key = secrets.token_bytes(32)
+
+    _assignment_pattern = re.compile(
+        r"""(?ix)
+        (?P<name>[A-Za-z_][A-Za-z0-9_-]*)
+        \s*(?:=|:)\s*
+        (?P<quote>["'])
+        (?P<value>[^"'\r\n]{4,})
+        (?P=quote)
+        """,
+    )
+
+    _database_url_pattern = re.compile(
+        r"""(?ix)
+        (?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis)
+        ://
+        [^:\s/@]+
+        :
+        (?P<password>[^@\s/]+)
+        @
+        """,
+    )
+
+    _placeholder_pattern = re.compile(
+        r"""(?ix)
+        (?:
+            example
+            |sample
+            |dummy
+            |fake
+            |test
+            |testing
+            |changeme
+            |change[_-]?me
+            |replace[_-]?me
+            |your[_-]?
+            |insert[_-]?
+            |placeholder
+            |not[_-]?a[_-]?real
+            |development
+            |dev[_-]?only
+            |xxxx+
+            |123456
+        )
+        """,
+    )
+
+    _provider_patterns: tuple[
+        tuple[str, str, re.Pattern[str]],
+        ...
+    ] = (
+        (
+            "GitHub",
+            "personal_access_token",
+            re.compile(
+                r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
+            ),
+        ),
+        (
+            "AWS",
+            "access_key_id",
+            re.compile(
+                r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"
+            ),
+        ),
+        (
+            "OpenAI-compatible",
+            "api_key",
+            re.compile(
+                r"\bsk-[A-Za-z0-9_-]{16,}\b"
+            ),
+        ),
+        (
+            "JWT",
+            "token",
+            re.compile(
+                r"\beyJ[A-Za-z0-9_-]{8,}"
+                r"\.[A-Za-z0-9_-]{8,}"
+                r"\.[A-Za-z0-9_-]{8,}\b"
+            ),
+        ),
+    )
+
+    def enrich_evidence_list(
+        self,
+        evidence_items: Iterable[ScannerEvidence],
+    ) -> list[ScannerEvidence]:
+        return [
+            self.enrich_evidence(evidence)
+            for evidence in evidence_items
+        ]
+
+    def enrich_evidence(
+        self,
+        evidence: ScannerEvidence,
+    ) -> ScannerEvidence:
+        if ".secrets." not in evidence.rule_id:
+            return evidence
+
+        classification = self.classify(
+            rule_id=evidence.rule_id,
+            code=evidence.code or "",
+        )
+
+        return evidence.model_copy(
+            deep=True,
+            update={
+                "secret": classification,
+            },
+        )
+
+    def classify(
+        self,
+        *,
+        rule_id: str,
+        code: str,
+    ) -> SecretClassification:
+        secret_value = self._extract_secret_value(
+            rule_id=rule_id,
+            code=code,
+        )
+
+        provider, secret_type, base_confidence = (
+            self._classify_provider(
+                rule_id=rule_id,
+                secret_value=secret_value,
+            )
+        )
+
+        likely_placeholder = self._is_likely_placeholder(
+            secret_value
+        )
+
+        entropy = self._entropy(secret_value)
+
+        confidence = base_confidence
+
+        if secret_value and entropy < 2.5:
+            confidence -= 0.15
+
+        if likely_placeholder:
+            confidence = min(confidence, 0.25)
+
+        confidence = max(
+            0.05,
+            min(confidence, 0.99),
+        )
+
+        rotation_required = (
+            not likely_placeholder
+            and secret_type
+            not in {"unknown", "password_placeholder"}
+        )
+
+        return SecretClassification(
+            provider=provider,
+            secret_type=secret_type,
+            confidence=round(confidence, 2),
+            likely_placeholder=likely_placeholder,
+            rotation_required=rotation_required,
+            fingerprint=(
+                self._fingerprint(secret_value)
+                if secret_value
+                else None
+            ),
+            entropy=round(entropy, 2),
+            remediation=self._remediation(
+                provider=provider,
+                secret_type=secret_type,
+                likely_placeholder=likely_placeholder,
+            ),
+        )
+
+    def _extract_secret_value(
+        self,
+        *,
+        rule_id: str,
+        code: str,
+    ) -> str:
+        if not code:
+            return ""
+
+        if "private-key" in rule_id:
+            return "PRIVATE_KEY_MATERIAL"
+
+        if "database-url" in rule_id:
+            match = self._database_url_pattern.search(code)
+
+            if match:
+                return match.group("password")
+
+        for _, _, pattern in self._provider_patterns:
+            match = pattern.search(code)
+
+            if match:
+                return match.group(0)
+
+        assignment = self._assignment_pattern.search(code)
+
+        if assignment:
+            return assignment.group("value")
+
+        return ""
+
+    def _classify_provider(
+        self,
+        *,
+        rule_id: str,
+        secret_value: str,
+    ) -> tuple[str, str, float]:
+        for provider, secret_type, pattern in (
+            self._provider_patterns
+        ):
+            if secret_value and pattern.search(secret_value):
+                return provider, secret_type, 0.98
+
+        if "github-token" in rule_id:
+            return "GitHub", "personal_access_token", 0.95
+
+        if "aws-access-key" in rule_id:
+            return "AWS", "access_key_id", 0.98
+
+        if "private-key" in rule_id:
+            return "Cryptography", "private_key", 0.99
+
+        if "database-url" in rule_id:
+            return "Database", "connection_password", 0.94
+
+        if "jwt-secret" in rule_id:
+            return "JWT", "signing_secret", 0.88
+
+        if "password" in rule_id:
+            return "Generic", "password", 0.72
+
+        if "api-key" in rule_id:
+            return "Generic", "api_key", 0.78
+
+        return "Generic", "unknown", 0.60
+
+    def _is_likely_placeholder(
+        self,
+        value: str,
+    ) -> bool:
+        if not value:
+            return False
+
+        normalized = value.strip().lower()
+
+        if self._placeholder_pattern.search(normalized):
+            return True
+
+        unique_ratio = (
+            len(set(normalized)) / len(normalized)
+            if normalized
+            else 0.0
+        )
+
+        if len(normalized) >= 8 and unique_ratio < 0.25:
+            return True
+
+        return False
+
+    @staticmethod
+    def _entropy(value: str) -> float:
+        if not value:
+            return 0.0
+
+        counts = Counter(value)
+        length = len(value)
+
+        return -sum(
+            (count / length)
+            * math.log2(count / length)
+            for count in counts.values()
+        )
+
+    @classmethod
+    def _fingerprint(
+        cls,
+        value: str,
+    ) -> str:
+        digest = hmac.new(
+            cls._process_fingerprint_key,
+            value.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        return f"hmac-sha256:{digest[:12]}"
+
+    @staticmethod
+    def _remediation(
+        *,
+        provider: str,
+        secret_type: str,
+        likely_placeholder: bool,
+    ) -> str:
+        if likely_placeholder:
+            return (
+                "Confirm that this is intentionally non-production "
+                "test data. Keep examples clearly labelled and ensure "
+                "real credentials are never committed."
+            )
+
+        if provider == "GitHub":
+            return (
+                "Revoke the exposed GitHub token, create a replacement "
+                "with minimum required scopes, and load it from a "
+                "protected secret store."
+            )
+
+        if provider == "AWS":
+            return (
+                "Deactivate the exposed AWS access key, investigate its "
+                "usage, rotate associated credentials, and prefer an "
+                "IAM role with least privilege."
+            )
+
+        if secret_type == "private_key":
+            return (
+                "Remove the private key from source control, rotate the "
+                "key pair, inspect repository history, and store the "
+                "replacement in a managed secret service."
+            )
+
+        if provider == "Database":
+            return (
+                "Rotate the database password, remove credentials from "
+                "the connection URL, and load them through protected "
+                "runtime configuration."
+            )
+
+        if provider == "JWT":
+            return (
+                "Rotate the signing secret, invalidate affected tokens "
+                "where appropriate, and load signing material from a "
+                "key-management or secret-management service."
+            )
+
+        return (
+            "Rotate the credential if it may have been exposed and load "
+            "the replacement from an environment variable or approved "
+            "secret manager."
+        )
