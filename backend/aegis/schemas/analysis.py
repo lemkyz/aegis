@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 
 
 Severity = Literal["info", "low", "medium", "high", "critical"]
+AnalysisStatus = Literal["completed", "skipped", "fallback"]
+ResultSource = Literal["scanner", "ai", "scanner_fallback"]
 
 
 class AnalyzeCodeRequest(BaseModel):
@@ -53,4 +55,6 @@ class AnalyzeCodeResponse(BaseModel):
     language: str
     model: str
     scanner: str
+    analysis_status: AnalysisStatus = "completed"
+    result_source: ResultSource = "scanner"
     findings: list[SecurityFinding]

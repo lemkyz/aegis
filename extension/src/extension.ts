@@ -35,6 +35,8 @@ interface AnalyzeResponse {
   language: string;
   model: string;
   scanner: string;
+  analysis_status?: "completed" | "skipped" | "fallback";
+  result_source?: "scanner" | "ai" | "scanner_fallback";
   findings: SecurityFinding[];
 }
 
@@ -485,6 +487,9 @@ function buildMarkdownReport(
     `- **Mode:** ${modeLabel}`,
     `- **Model:** ${result.model}`,
     `- **Scanner:** ${result.scanner}`,
+    `- **AI Review Status:** ${(result.analysis_status ?? "completed").toUpperCase()}`,
+    `- **Result Source:** ${(result.result_source ?? "scanner").replaceAll("_", " ").toUpperCase()}`,
+    `- **Patch Available:** ${findFirstPatch(result) ? "YES" : "NO"}`,
     `- **Findings:** ${result.findings.length}`,
     "",
   ];

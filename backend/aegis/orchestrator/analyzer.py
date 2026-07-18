@@ -71,6 +71,8 @@ class SecurityAnalyzer:
                 language=request.language,
                 model="not-used",
                 scanner=self.scanner.name,
+                analysis_status="skipped",
+                result_source="scanner",
                 findings=[],
             )
 
@@ -119,6 +121,8 @@ class SecurityAnalyzer:
                 language=request.language,
                 model=f"{self.model_client.model} (fallback)",
                 scanner=self.scanner.name,
+                analysis_status="fallback",
+                result_source="scanner_fallback",
                 findings=findings,
             )
 
@@ -132,6 +136,8 @@ class SecurityAnalyzer:
             language=request.language,
             model=self.model_client.model,
             scanner=self.scanner.name,
+            analysis_status="completed",
+            result_source="ai",
             findings=findings,
         )
 
