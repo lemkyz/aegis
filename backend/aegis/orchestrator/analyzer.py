@@ -40,6 +40,8 @@ class SecurityAnalyzer:
             language=request.language,
             model="not-used",
             scanner=self.scanner.name,
+            analysis_status="skipped",
+            result_source="scanner",
             findings=findings,
         )
 
