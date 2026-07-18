@@ -50,6 +50,16 @@
         "title": "Aegis: Refresh Security View",
         "category": "Aegis",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "aegis.scanUncommittedChanges",
+        "title": "Aegis: Scan Uncommitted Changes",
+        "category": "Aegis"
+      },
+      {
+        "command": "aegis.scanStagedChanges",
+        "title": "Aegis: Scan Staged Changes",
+        "category": "Aegis"
       }
     ],
     "menus": {

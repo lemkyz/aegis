@@ -1,5 +1,9 @@
+import { execFile } from "node:child_process";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import * as vscode from "vscode";
+
+const execFileAsync = promisify(execFile);
 
 type Severity = "info" | "low" | "medium" | "high" | "critical";
 type AnalysisMode = "fast" | "deep";
@@ -115,6 +119,18 @@ export function activate(context: vscode.ExtensionContext): void {
     scanEntireWorkspace,
   );
 
+  const scanUncommittedChangesCommand =
+    vscode.commands.registerCommand(
+      "aegis.scanUncommittedChanges",
+      () => scanGitChanges("uncommitted"),
+    );
+
+  const scanStagedChangesCommand =
+    vscode.commands.registerCommand(
+      "aegis.scanStagedChanges",
+      () => scanGitChanges("staged"),
+    );
+
   const deepAnalysisCommand = vscode.commands.registerCommand(
     "aegis.deepAnalyzeSelectedCode",
     async () => analyzeSelectedCode("deep"),
@@ -159,6 +175,8 @@ export function activate(context: vscode.ExtensionContext): void {
     fastScanCommand,
     fastScanCurrentFileCommand,
     scanWorkspaceCommand,
+    scanUncommittedChangesCommand,
+    scanStagedChangesCommand,
     deepAnalysisCommand,
     applyFixCommand,
     deepAnalyzeDiagnosticCommand,
@@ -466,6 +484,352 @@ async function openWorkspaceFinding(
   editor.revealRange(
     range,
     vscode.TextEditorRevealType.InCenter,
+  );
+}
+
+type GitScanMode = "uncommitted" | "staged";
+
+async function scanGitChanges(
+  mode: GitScanMode,
+): Promise<void> {
+  const workspaceFolder =
+    vscode.workspace.workspaceFolders?.[0];
+
+  if (!workspaceFolder) {
+    void vscode.window.showWarningMessage(
+      "Aegis: Open a Git workspace before scanning changes.",
+    );
+    return;
+  }
+
+  const workspacePath = workspaceFolder.uri.fsPath;
+
+  const repositoryRoot = await findGitRepositoryRoot(
+    workspacePath,
+  );
+
+  if (!repositoryRoot) {
+    void vscode.window.showWarningMessage(
+      "Aegis: The current workspace is not inside a Git repository.",
+    );
+    return;
+  }
+
+  let relativePaths: string[];
+
+  try {
+    relativePaths = await getGitChangedFiles(
+      repositoryRoot,
+      mode,
+    );
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unknown Git error.";
+
+    void vscode.window.showErrorMessage(
+      `Aegis: Git change discovery failed: ${message}`,
+    );
+    return;
+  }
+
+  const supportedPaths = relativePaths.filter(
+    isSupportedSourcePath,
+  );
+
+  if (supportedPaths.length === 0) {
+    const label =
+      mode === "staged"
+        ? "staged"
+        : "uncommitted";
+
+    void vscode.window.showInformationMessage(
+      `Aegis: No supported ${label} source files were found.`,
+    );
+    return;
+  }
+
+  const configuration =
+    vscode.workspace.getConfiguration("aegis");
+
+  const backendUrl = configuration
+    .get<string>(
+      "backendUrl",
+      "http://127.0.0.1:8000",
+    )
+    .replace(/\/+$/, "");
+
+  const summary: WorkspaceScanSummary = {
+    filesDiscovered: supportedPaths.length,
+    filesScanned: 0,
+    filesSkipped: 0,
+    filesFailed: 0,
+    results: [],
+    errors: [],
+  };
+
+  diagnosticCollection?.clear();
+
+  const label =
+    mode === "staged"
+      ? "staged changes"
+      : "uncommitted changes";
+
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `Aegis is scanning ${label}`,
+      cancellable: true,
+    },
+    async (progress, cancellationToken) => {
+      const increment = 100 / supportedPaths.length;
+
+      for (
+        const [index, relativePath] of
+        supportedPaths.entries()
+      ) {
+        if (cancellationToken.isCancellationRequested) {
+          break;
+        }
+
+        progress.report({
+          increment,
+          message:
+            `${index + 1}/${supportedPaths.length} · ${relativePath}`,
+        });
+
+        const uri = vscode.Uri.file(
+          path.join(repositoryRoot, relativePath),
+        );
+
+        try {
+          const document =
+            await vscode.workspace.openTextDocument(uri);
+
+          const code = document.getText();
+
+          if (!code.trim()) {
+            summary.filesSkipped += 1;
+            continue;
+          }
+
+          if (code.length > 1_000_000) {
+            summary.filesSkipped += 1;
+            summary.errors.push(
+              `${relativePath}: skipped because the file exceeds 1 MB.`,
+            );
+            continue;
+          }
+
+          const result = await requestAnalysis({
+            backendUrl,
+            code,
+            filename: relativePath,
+            language: normalizeLanguage(
+              document.languageId,
+            ),
+            mode: "fast",
+          });
+
+          summary.filesScanned += 1;
+          summary.results.push({
+            uri,
+            relativePath,
+            response: result,
+          });
+
+          updateDiagnostics(
+            document,
+            result,
+            0,
+          );
+        } catch (error: unknown) {
+          summary.filesFailed += 1;
+
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Unknown scan error.";
+
+          summary.errors.push(
+            `${relativePath}: ${message}`,
+          );
+        }
+      }
+    },
+  );
+
+  latestWorkspaceScan = summary;
+  securityTreeProvider?.refresh();
+
+  await showGitChangesReport(
+    summary,
+    mode,
+  );
+
+  const totalFindings = summary.results.reduce(
+    (total, result) =>
+      total + result.response.findings.length,
+    0,
+  );
+
+  if (totalFindings === 0) {
+    void vscode.window.showInformationMessage(
+      `Aegis found no security findings in ${summary.filesScanned} scanned ${label} file(s).`,
+    );
+    return;
+  }
+
+  const action = await vscode.window.showWarningMessage(
+    `Aegis found ${totalFindings} security finding(s) in ${label}.`,
+    "Open Problems",
+    "Keep Report Open",
+  );
+
+  if (action === "Open Problems") {
+    await vscode.commands.executeCommand(
+      "workbench.actions.view.problems",
+    );
+  }
+}
+
+async function findGitRepositoryRoot(
+  workspacePath: string,
+): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["rev-parse", "--show-toplevel"],
+      {
+        cwd: workspacePath,
+        timeout: 10_000,
+      },
+    );
+
+    const repositoryRoot = stdout.trim();
+
+    return repositoryRoot || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function getGitChangedFiles(
+  workspacePath: string,
+  mode: GitScanMode,
+): Promise<string[]> {
+  if (mode === "staged") {
+    const { stdout } = await execFileAsync(
+      "git",
+      [
+        "diff",
+        "--cached",
+        "--name-only",
+        "--diff-filter=ACMR",
+      ],
+      {
+        cwd: workspacePath,
+        timeout: 15_000,
+      },
+    );
+
+    return uniqueNonEmptyLines(stdout);
+  }
+
+  const [
+    trackedResult,
+    untrackedResult,
+  ] = await Promise.all([
+    execFileAsync(
+      "git",
+      [
+        "diff",
+        "--name-only",
+        "--diff-filter=ACMR",
+        "HEAD",
+      ],
+      {
+        cwd: workspacePath,
+        timeout: 15_000,
+      },
+    ),
+    execFileAsync(
+      "git",
+      [
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+      ],
+      {
+        cwd: workspacePath,
+        timeout: 15_000,
+      },
+    ),
+  ]);
+
+  return Array.from(
+    new Set([
+      ...uniqueNonEmptyLines(
+        trackedResult.stdout,
+      ),
+      ...uniqueNonEmptyLines(
+        untrackedResult.stdout,
+      ),
+    ]),
+  ).sort();
+}
+
+function uniqueNonEmptyLines(
+  output: string,
+): string[] {
+  return Array.from(
+    new Set(
+      output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function isSupportedSourcePath(
+  relativePath: string,
+): boolean {
+  return /\.(py|js|jsx|ts|tsx)$/i.test(
+    relativePath,
+  );
+}
+
+async function showGitChangesReport(
+  summary: WorkspaceScanSummary,
+  mode: GitScanMode,
+): Promise<void> {
+  const baseReport =
+    buildWorkspaceScanReport(summary);
+
+  const heading =
+    mode === "staged"
+      ? "# Aegis Staged Changes Security Scan"
+      : "# Aegis Uncommitted Changes Security Scan";
+
+  const content = baseReport.replace(
+    "# Aegis Workspace Security Scan",
+    heading,
+  );
+
+  const reportDocument =
+    await vscode.workspace.openTextDocument({
+      language: "markdown",
+      content,
+    });
+
+  await vscode.window.showTextDocument(
+    reportDocument,
+    {
+      preview: true,
+      viewColumn: vscode.ViewColumn.Beside,
+    },
   );
 }
 
