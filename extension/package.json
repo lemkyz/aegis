@@ -44,6 +44,12 @@
         "command": "aegis.applySecureFix",
         "title": "Aegis: Apply Secure Fix",
         "category": "Aegis"
+      },
+      {
+        "command": "aegis.refreshSecurityView",
+        "title": "Aegis: Refresh Security View",
+        "category": "Aegis",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
@@ -75,6 +81,13 @@
           "when": "explorerResourceIsFolder",
           "group": "aegis@1"
         }
+      ],
+      "view/title": [
+        {
+          "command": "aegis.refreshSecurityView",
+          "when": "view == aegis.securityView",
+          "group": "navigation"
+        }
       ]
     },
     "configuration": {
@@ -86,6 +99,15 @@
           "description": "Address of the local Aegis backend."
         }
       }
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "aegis.securityView",
+          "name": "Aegis Security",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
     }
   },
   "devDependencies": {

@@ -38,10 +38,19 @@ exports.deactivate = deactivate;
 const path = __importStar(require("node:path"));
 const vscode = __importStar(require("vscode"));
 let lastAnalysis;
+let latestWorkspaceScan;
 let diagnosticCollection;
+let securityTreeProvider;
 function activate(context) {
     diagnosticCollection =
         vscode.languages.createDiagnosticCollection("aegis");
+    securityTreeProvider = new AegisSecurityTreeProvider();
+    const securityTreeView = vscode.window.createTreeView("aegis.securityView", {
+        treeDataProvider: securityTreeProvider,
+        showCollapseAll: true,
+    });
+    const openWorkspaceFindingCommand = vscode.commands.registerCommand("aegis.openWorkspaceFinding", openWorkspaceFinding);
+    const refreshSecurityViewCommand = vscode.commands.registerCommand("aegis.refreshSecurityView", () => securityTreeProvider?.refresh());
     const fastScanCommand = vscode.commands.registerCommand("aegis.fastScanSelectedCode", async () => analyzeSelectedCode("fast"));
     const fastScanCurrentFileCommand = vscode.commands.registerCommand("aegis.fastScanCurrentFile", fastScanCurrentFile);
     const scanWorkspaceCommand = vscode.commands.registerCommand("aegis.scanWorkspace", scanEntireWorkspace);
@@ -57,7 +66,160 @@ function activate(context) {
             vscode.CodeActionKind.QuickFix,
         ],
     });
-    context.subscriptions.push(diagnosticCollection, fastScanCommand, fastScanCurrentFileCommand, scanWorkspaceCommand, deepAnalysisCommand, applyFixCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
+    context.subscriptions.push(diagnosticCollection, securityTreeView, openWorkspaceFindingCommand, refreshSecurityViewCommand, fastScanCommand, fastScanCurrentFileCommand, scanWorkspaceCommand, deepAnalysisCommand, applyFixCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
+}
+class AegisSecurityTreeProvider {
+    changeEmitter = new vscode.EventEmitter();
+    onDidChangeTreeData = this.changeEmitter.event;
+    refresh() {
+        this.changeEmitter.fire();
+    }
+    getTreeItem(element) {
+        return element;
+    }
+    getChildren(element) {
+        if (!latestWorkspaceScan) {
+            return element
+                ? []
+                : [
+                    new SecurityMessageTreeItem("Run Workspace Scan to populate Aegis Security.", "shield"),
+                ];
+        }
+        if (!element) {
+            const findingCount = latestWorkspaceScan.results.reduce((total, result) => total + result.response.findings.length, 0);
+            const risk = getWorkspaceRisk(latestWorkspaceScan);
+            const items = [
+                new SecuritySummaryTreeItem(`Workspace Risk: ${risk.toUpperCase()}`, risk),
+                new SecuritySummaryTreeItem(`${findingCount} finding(s) in ${latestWorkspaceScan.filesScanned} file(s)`, "summary"),
+            ];
+            const vulnerableFiles = latestWorkspaceScan.results.filter((result) => result.response.findings.length > 0);
+            if (vulnerableFiles.length === 0) {
+                items.push(new SecurityMessageTreeItem("No findings detected", "pass"));
+                return items;
+            }
+            items.push(...vulnerableFiles.map((result) => new SecurityFileTreeItem(result)));
+            return items;
+        }
+        if (element instanceof SecurityFileTreeItem) {
+            return element.result.response.findings.map((finding) => new SecurityFindingTreeItem(element.result, finding));
+        }
+        return [];
+    }
+}
+class SecuritySummaryTreeItem extends vscode.TreeItem {
+    constructor(label, kind) {
+        super(label, vscode.TreeItemCollapsibleState.None);
+        this.contextValue = "aegisSecuritySummary";
+        this.iconPath =
+            kind === "critical" || kind === "high"
+                ? new vscode.ThemeIcon("error")
+                : kind === "medium"
+                    ? new vscode.ThemeIcon("warning")
+                    : kind === "low" || kind === "info"
+                        ? new vscode.ThemeIcon("info")
+                        : new vscode.ThemeIcon("shield");
+    }
+}
+class SecurityFileTreeItem extends vscode.TreeItem {
+    result;
+    constructor(result) {
+        super(result.relativePath, vscode.TreeItemCollapsibleState.Expanded);
+        this.result = result;
+        this.description =
+            `${result.response.findings.length} finding(s)`;
+        this.tooltip =
+            `${result.relativePath}\n${this.description}`;
+        this.contextValue = "aegisSecurityFile";
+        this.resourceUri = result.uri;
+        this.iconPath = new vscode.ThemeIcon("file-code");
+    }
+}
+class SecurityFindingTreeItem extends vscode.TreeItem {
+    result;
+    finding;
+    constructor(result, finding) {
+        super(finding.title, vscode.TreeItemCollapsibleState.None);
+        this.result = result;
+        this.finding = finding;
+        const cwe = finding.cwe[0] ?? "Security";
+        const line = finding.scanner_evidence[0]?.line_start ??
+            finding.vulnerable_lines[0] ??
+            1;
+        this.description =
+            `${finding.severity.toUpperCase()} · ${cwe}`;
+        this.tooltip = new vscode.MarkdownString([
+            `**${finding.title}**`,
+            "",
+            `- Severity: ${finding.severity.toUpperCase()}`,
+            `- CWE: ${finding.cwe.join(", ") || "Not specified"}`,
+            `- OWASP: ${finding.owasp.join(", ") || "Not specified"}`,
+            `- File: ${result.relativePath}`,
+            `- Line: ${line}`,
+            "",
+            finding.summary,
+        ].join("\n"));
+        this.contextValue = "aegisSecurityFinding";
+        this.iconPath = severityIcon(finding.severity);
+        this.command = {
+            command: "aegis.openWorkspaceFinding",
+            title: "Open Security Finding",
+            arguments: [
+                result.uri,
+                line,
+            ],
+        };
+    }
+}
+class SecurityMessageTreeItem extends vscode.TreeItem {
+    constructor(label, icon) {
+        super(label, vscode.TreeItemCollapsibleState.None);
+        this.iconPath = new vscode.ThemeIcon(icon === "pass"
+            ? "pass-filled"
+            : "shield");
+    }
+}
+function severityIcon(severity) {
+    switch (severity) {
+        case "critical":
+        case "high":
+            return new vscode.ThemeIcon("error");
+        case "medium":
+            return new vscode.ThemeIcon("warning");
+        case "low":
+        case "info":
+        default:
+            return new vscode.ThemeIcon("info");
+    }
+}
+function getWorkspaceRisk(summary) {
+    const severities = summary.results.flatMap((result) => result.response.findings.map((finding) => finding.severity));
+    if (severities.includes("critical")) {
+        return "critical";
+    }
+    if (severities.includes("high")) {
+        return "high";
+    }
+    if (severities.includes("medium")) {
+        return "medium";
+    }
+    if (severities.includes("low")) {
+        return "low";
+    }
+    if (severities.includes("info")) {
+        return "info";
+    }
+    return "none";
+}
+async function openWorkspaceFinding(uri, oneBasedLine) {
+    const document = await vscode.workspace.openTextDocument(uri);
+    const editor = await vscode.window.showTextDocument(document, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.One,
+    });
+    const line = Math.max(0, Math.min(oneBasedLine - 1, document.lineCount - 1));
+    const range = document.lineAt(line).range;
+    editor.selection = new vscode.Selection(range.start, range.start);
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
 }
 async function scanEntireWorkspace() {
     const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -136,6 +298,8 @@ async function scanEntireWorkspace() {
             }
         }
     });
+    latestWorkspaceScan = summary;
+    securityTreeProvider?.refresh();
     await showWorkspaceScanReport(summary);
     const totalFindings = summary.results.reduce((total, result) => total + result.response.findings.length, 0);
     if (totalFindings === 0) {
@@ -670,6 +834,8 @@ function normalizeLanguage(languageId) {
 function deactivate() {
     diagnosticCollection?.clear();
     diagnosticCollection = undefined;
+    securityTreeProvider = undefined;
+    latestWorkspaceScan = undefined;
     lastAnalysis = undefined;
 }
 //# sourceMappingURL=extension.js.map

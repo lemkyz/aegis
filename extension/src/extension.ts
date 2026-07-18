@@ -72,11 +72,33 @@ interface WorkspaceScanSummary {
 }
 
 let lastAnalysis: LastAnalysis | undefined;
+let latestWorkspaceScan: WorkspaceScanSummary | undefined;
 let diagnosticCollection: vscode.DiagnosticCollection | undefined;
+let securityTreeProvider: AegisSecurityTreeProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   diagnosticCollection =
     vscode.languages.createDiagnosticCollection("aegis");
+
+  securityTreeProvider = new AegisSecurityTreeProvider();
+
+  const securityTreeView =
+    vscode.window.createTreeView("aegis.securityView", {
+      treeDataProvider: securityTreeProvider,
+      showCollapseAll: true,
+    });
+
+  const openWorkspaceFindingCommand =
+    vscode.commands.registerCommand(
+      "aegis.openWorkspaceFinding",
+      openWorkspaceFinding,
+    );
+
+  const refreshSecurityViewCommand =
+    vscode.commands.registerCommand(
+      "aegis.refreshSecurityView",
+      () => securityTreeProvider?.refresh(),
+    );
 
   const fastScanCommand = vscode.commands.registerCommand(
     "aegis.fastScanSelectedCode",
@@ -131,6 +153,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     diagnosticCollection,
+    securityTreeView,
+    openWorkspaceFindingCommand,
+    refreshSecurityViewCommand,
     fastScanCommand,
     fastScanCurrentFileCommand,
     scanWorkspaceCommand,
@@ -139,6 +164,308 @@ export function activate(context: vscode.ExtensionContext): void {
     deepAnalyzeDiagnosticCommand,
     openLastReportCommand,
     codeActionProvider,
+  );
+}
+
+type SecurityTreeElement =
+  | SecuritySummaryTreeItem
+  | SecurityFileTreeItem
+  | SecurityFindingTreeItem
+  | SecurityMessageTreeItem;
+
+class AegisSecurityTreeProvider
+  implements vscode.TreeDataProvider<SecurityTreeElement> {
+  private readonly changeEmitter =
+    new vscode.EventEmitter<
+      SecurityTreeElement | undefined | null | void
+    >();
+
+  readonly onDidChangeTreeData =
+    this.changeEmitter.event;
+
+  refresh(): void {
+    this.changeEmitter.fire();
+  }
+
+  getTreeItem(
+    element: SecurityTreeElement,
+  ): vscode.TreeItem {
+    return element;
+  }
+
+  getChildren(
+    element?: SecurityTreeElement,
+  ): SecurityTreeElement[] {
+    if (!latestWorkspaceScan) {
+      return element
+        ? []
+        : [
+            new SecurityMessageTreeItem(
+              "Run Workspace Scan to populate Aegis Security.",
+              "shield",
+            ),
+          ];
+    }
+
+    if (!element) {
+      const findingCount =
+        latestWorkspaceScan.results.reduce(
+          (total, result) =>
+            total + result.response.findings.length,
+          0,
+        );
+
+      const risk = getWorkspaceRisk(
+        latestWorkspaceScan,
+      );
+
+      const items: SecurityTreeElement[] = [
+        new SecuritySummaryTreeItem(
+          `Workspace Risk: ${risk.toUpperCase()}`,
+          risk,
+        ),
+        new SecuritySummaryTreeItem(
+          `${findingCount} finding(s) in ${latestWorkspaceScan.filesScanned} file(s)`,
+          "summary",
+        ),
+      ];
+
+      const vulnerableFiles =
+        latestWorkspaceScan.results.filter(
+          (result) =>
+            result.response.findings.length > 0,
+        );
+
+      if (vulnerableFiles.length === 0) {
+        items.push(
+          new SecurityMessageTreeItem(
+            "No findings detected",
+            "pass",
+          ),
+        );
+
+        return items;
+      }
+
+      items.push(
+        ...vulnerableFiles.map(
+          (result) =>
+            new SecurityFileTreeItem(result),
+        ),
+      );
+
+      return items;
+    }
+
+    if (element instanceof SecurityFileTreeItem) {
+      return element.result.response.findings.map(
+        (finding) =>
+          new SecurityFindingTreeItem(
+            element.result,
+            finding,
+          ),
+      );
+    }
+
+    return [];
+  }
+}
+
+class SecuritySummaryTreeItem extends vscode.TreeItem {
+  constructor(
+    label: string,
+    kind: Severity | "summary" | "none",
+  ) {
+    super(
+      label,
+      vscode.TreeItemCollapsibleState.None,
+    );
+
+    this.contextValue = "aegisSecuritySummary";
+
+    this.iconPath =
+      kind === "critical" || kind === "high"
+        ? new vscode.ThemeIcon("error")
+        : kind === "medium"
+          ? new vscode.ThemeIcon("warning")
+          : kind === "low" || kind === "info"
+            ? new vscode.ThemeIcon("info")
+            : new vscode.ThemeIcon("shield");
+  }
+}
+
+class SecurityFileTreeItem extends vscode.TreeItem {
+  constructor(
+    readonly result: WorkspaceFileResult,
+  ) {
+    super(
+      result.relativePath,
+      vscode.TreeItemCollapsibleState.Expanded,
+    );
+
+    this.description =
+      `${result.response.findings.length} finding(s)`;
+
+    this.tooltip =
+      `${result.relativePath}\n${this.description}`;
+
+    this.contextValue = "aegisSecurityFile";
+    this.resourceUri = result.uri;
+    this.iconPath = new vscode.ThemeIcon("file-code");
+  }
+}
+
+class SecurityFindingTreeItem extends vscode.TreeItem {
+  constructor(
+    readonly result: WorkspaceFileResult,
+    readonly finding: SecurityFinding,
+  ) {
+    super(
+      finding.title,
+      vscode.TreeItemCollapsibleState.None,
+    );
+
+    const cwe = finding.cwe[0] ?? "Security";
+    const line =
+      finding.scanner_evidence[0]?.line_start ??
+      finding.vulnerable_lines[0] ??
+      1;
+
+    this.description =
+      `${finding.severity.toUpperCase()} · ${cwe}`;
+
+    this.tooltip = new vscode.MarkdownString(
+      [
+        `**${finding.title}**`,
+        "",
+        `- Severity: ${finding.severity.toUpperCase()}`,
+        `- CWE: ${finding.cwe.join(", ") || "Not specified"}`,
+        `- OWASP: ${finding.owasp.join(", ") || "Not specified"}`,
+        `- File: ${result.relativePath}`,
+        `- Line: ${line}`,
+        "",
+        finding.summary,
+      ].join("\n"),
+    );
+
+    this.contextValue = "aegisSecurityFinding";
+    this.iconPath = severityIcon(finding.severity);
+
+    this.command = {
+      command: "aegis.openWorkspaceFinding",
+      title: "Open Security Finding",
+      arguments: [
+        result.uri,
+        line,
+      ],
+    };
+  }
+}
+
+class SecurityMessageTreeItem extends vscode.TreeItem {
+  constructor(
+    label: string,
+    icon: "shield" | "pass",
+  ) {
+    super(
+      label,
+      vscode.TreeItemCollapsibleState.None,
+    );
+
+    this.iconPath = new vscode.ThemeIcon(
+      icon === "pass"
+        ? "pass-filled"
+        : "shield",
+    );
+  }
+}
+
+function severityIcon(
+  severity: Severity,
+): vscode.ThemeIcon {
+  switch (severity) {
+    case "critical":
+    case "high":
+      return new vscode.ThemeIcon("error");
+
+    case "medium":
+      return new vscode.ThemeIcon("warning");
+
+    case "low":
+    case "info":
+    default:
+      return new vscode.ThemeIcon("info");
+  }
+}
+
+function getWorkspaceRisk(
+  summary: WorkspaceScanSummary,
+): Severity | "none" {
+  const severities =
+    summary.results.flatMap(
+      (result) =>
+        result.response.findings.map(
+          (finding) => finding.severity,
+        ),
+    );
+
+  if (severities.includes("critical")) {
+    return "critical";
+  }
+
+  if (severities.includes("high")) {
+    return "high";
+  }
+
+  if (severities.includes("medium")) {
+    return "medium";
+  }
+
+  if (severities.includes("low")) {
+    return "low";
+  }
+
+  if (severities.includes("info")) {
+    return "info";
+  }
+
+  return "none";
+}
+
+async function openWorkspaceFinding(
+  uri: vscode.Uri,
+  oneBasedLine: number,
+): Promise<void> {
+  const document =
+    await vscode.workspace.openTextDocument(uri);
+
+  const editor =
+    await vscode.window.showTextDocument(
+      document,
+      {
+        preview: false,
+        viewColumn: vscode.ViewColumn.One,
+      },
+    );
+
+  const line = Math.max(
+    0,
+    Math.min(
+      oneBasedLine - 1,
+      document.lineCount - 1,
+    ),
+  );
+
+  const range = document.lineAt(line).range;
+
+  editor.selection = new vscode.Selection(
+    range.start,
+    range.start,
+  );
+
+  editor.revealRange(
+    range,
+    vscode.TextEditorRevealType.InCenter,
   );
 }
 
@@ -269,6 +596,9 @@ async function scanEntireWorkspace(): Promise<void> {
       }
     },
   );
+
+  latestWorkspaceScan = summary;
+  securityTreeProvider?.refresh();
 
   await showWorkspaceScanReport(summary);
 
@@ -1266,5 +1596,7 @@ function normalizeLanguage(languageId: string): string {
 export function deactivate(): void {
   diagnosticCollection?.clear();
   diagnosticCollection = undefined;
+  securityTreeProvider = undefined;
+  latestWorkspaceScan = undefined;
   lastAnalysis = undefined;
 }
