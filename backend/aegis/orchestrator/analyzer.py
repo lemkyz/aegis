@@ -230,10 +230,16 @@ class SecurityAnalyzer:
             "medium",
         )
 
+        rule_parts = evidence.rule_id.split(".")
+
+        if (
+            len(rule_parts) >= 3
+            and rule_parts[0] == "aegis"
+        ):
+            rule_parts = rule_parts[2:]
+
         title = (
-            evidence.rule_id
-            .replace("aegis.python.", "")
-            .replace(".", " ")
+            " ".join(rule_parts)
             .replace("-", " ")
             .title()
         )

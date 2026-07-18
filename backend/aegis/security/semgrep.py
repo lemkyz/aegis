@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -10,11 +11,10 @@ from aegis.schemas.analysis import ScannerEvidence
 class SemgrepScanner:
     def __init__(self) -> None:
         self.name = "semgrep"
-        self.rules_path = (
+        self.rules_root = (
             Path(__file__).resolve().parents[3]
             / "security-engine"
             / "rules"
-            / "python"
         )
 
     async def scan(
@@ -30,11 +30,15 @@ class SemgrepScanner:
             file_path = Path(temp_dir) / f"source{suffix}"
             file_path.write_text(code, encoding="utf-8")
 
+            rules_path = self._rules_path_for_language(
+                language,
+            )
+
             process = await asyncio.create_subprocess_exec(
                 "semgrep",
                 "scan",
                 "--config",
-                str(self.rules_path),
+                str(rules_path),
                 "--json",
                 "--quiet",
                 "--no-git-ignore",
@@ -82,6 +86,32 @@ class SemgrepScanner:
                 for result in payload.get("results", [])
             ]
 
+    def _rules_path_for_language(
+        self,
+        language: str,
+    ) -> Path:
+        normalized = language.lower()
+
+        aliases = {
+            "javascriptreact": "javascript",
+            "typescriptreact": "typescript",
+        }
+
+        rule_language = aliases.get(
+            normalized,
+            normalized,
+        )
+
+        rules_path = self.rules_root / rule_language
+
+        if not rules_path.exists():
+            raise RuntimeError(
+                f"No Semgrep rules are configured for "
+                f"language: {language}"
+            )
+
+        return rules_path
+
     @staticmethod
     def _suffix_for_language(
         language: str,
@@ -102,11 +132,20 @@ class SemgrepScanner:
 
     @staticmethod
     def _normalize_rule_id(rule_id: str) -> str:
-        marker = "aegis.python."
-        marker_index = rule_id.find(marker)
+        matches = list(
+            re.finditer(
+                r"aegis\.(?:python|javascript|typescript)\.[A-Za-z0-9_.-]+",
+                rule_id,
+            )
+        )
 
-        if marker_index >= 0:
-            return rule_id[marker_index:]
+        if matches:
+            return matches[-1].group(0)
+
+        generic_index = rule_id.rfind("aegis.")
+
+        if generic_index >= 0:
+            return rule_id[generic_index:]
 
         return rule_id
 

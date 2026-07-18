@@ -1,0 +1,134 @@
+rules:
+  - id: aegis.typescript.command-injection.exec
+    languages:
+      - typescript
+    severity: ERROR
+    message: >-
+      Untrusted input appears to be passed into a shell command.
+      Use execFile or spawn with an argument array and validate input.
+    metadata:
+      cwe:
+        - CWE-78
+      owasp:
+        - A03:2021
+      category: security
+      technology:
+        - typescript
+        - nodejs
+    patterns:
+      - pattern-either:
+          - pattern: child_process.exec(`...${$INPUT}...`)
+          - pattern: child_process.exec("..." + $INPUT)
+          - pattern: exec(`...${$INPUT}...`)
+          - pattern: exec("..." + $INPUT)
+
+  - id: aegis.typescript.unsafe-eval
+    languages:
+      - typescript
+    severity: ERROR
+    message: >-
+      Dynamic input is passed to eval. Avoid eval and use an explicit parser
+      or a safe allowlisted operation.
+    metadata:
+      cwe:
+        - CWE-95
+      owasp:
+        - A03:2021
+      category: security
+      technology:
+        - typescript
+    patterns:
+      - pattern: eval($INPUT)
+
+  - id: aegis.typescript.sql-injection
+    languages:
+      - typescript
+    severity: ERROR
+    message: >-
+      A SQL query is constructed using string interpolation before execution.
+      Use parameterized queries or prepared statements.
+    metadata:
+      cwe:
+        - CWE-89
+      owasp:
+        - A03:2021
+      category: security
+      technology:
+        - typescript
+        - sql
+    patterns:
+      - pattern-either:
+          - pattern: $DB.query(`...${$INPUT}...`, ...)
+          - pattern: $DB.execute(`...${$INPUT}...`, ...)
+          - pattern: $DB.query("..." + $INPUT, ...)
+          - pattern: $DB.execute("..." + $INPUT, ...)
+
+  - id: aegis.typescript.path-traversal
+    languages:
+      - typescript
+    severity: ERROR
+    message: >-
+      User-controlled input appears to be joined into a filesystem path.
+      Resolve against an approved base directory and verify containment.
+    metadata:
+      cwe:
+        - CWE-22
+      owasp:
+        - A01:2021
+      category: security
+      technology:
+        - typescript
+        - nodejs
+    patterns:
+      - pattern-either:
+          - pattern: fs.readFile(path.join($BASE, $INPUT), ...)
+          - pattern: fs.readFileSync(path.join($BASE, $INPUT), ...)
+          - pattern: fs.writeFile(path.join($BASE, $INPUT), ...)
+          - pattern: fs.writeFileSync(path.join($BASE, $INPUT), ...)
+
+  - id: aegis.typescript.ssrf-fetch
+    languages:
+      - typescript
+    severity: WARNING
+    message: >-
+      Request-controlled input is passed directly to an outbound HTTP
+      request. Restrict allowed protocols, hosts, ports, redirects, and
+      private network ranges.
+    metadata:
+      cwe:
+        - CWE-918
+      owasp:
+        - A10:2021
+      category: security
+      technology:
+        - typescript
+        - web
+    patterns:
+      - pattern-either:
+          - pattern: fetch($REQ.query.$KEY, ...)
+          - pattern: fetch($REQ.body.$KEY, ...)
+          - pattern: fetch($REQ.params.$KEY, ...)
+          - pattern: axios.get($REQ.query.$KEY, ...)
+          - pattern: axios.get($REQ.body.$KEY, ...)
+          - pattern: axios.get($REQ.params.$KEY, ...)
+          - pattern: axios.post($REQ.query.$KEY, ...)
+          - pattern: axios.post($REQ.body.$KEY, ...)
+          - pattern: axios.post($REQ.params.$KEY, ...)
+
+  - id: aegis.typescript.secrets.hardcoded-secret
+    languages:
+      - typescript
+    severity: ERROR
+    message: >-
+      A credential or secret appears to be hardcoded in source code.
+      Load it from an environment variable or secret manager.
+    metadata:
+      cwe:
+        - CWE-798
+      owasp:
+        - A02:2021
+      category: secrets
+      technology:
+        - typescript
+    pattern-regex: >-
+      (?im)^\s*(?:const|let|var)\s+(?:password|passwd|apiKey|api_key|secretKey|secret_key|token|accessToken|access_token)\s*=\s*["'][^"'\n]{12,}["']
