@@ -46,7 +46,17 @@ function activate(context) {
     const fastScanCurrentFileCommand = vscode.commands.registerCommand("aegis.fastScanCurrentFile", fastScanCurrentFile);
     const deepAnalysisCommand = vscode.commands.registerCommand("aegis.deepAnalyzeSelectedCode", async () => analyzeSelectedCode("deep"));
     const applyFixCommand = vscode.commands.registerCommand("aegis.applySecureFix", applySecureFix);
-    context.subscriptions.push(diagnosticCollection, fastScanCommand, fastScanCurrentFileCommand, deepAnalysisCommand, applyFixCommand);
+    const deepAnalyzeDiagnosticCommand = vscode.commands.registerCommand("aegis.deepAnalyzeDiagnostic", deepAnalyzeDiagnostic);
+    const openLastReportCommand = vscode.commands.registerCommand("aegis.openLastSecurityReport", openLastSecurityReport);
+    const codeActionProvider = vscode.languages.registerCodeActionsProvider({
+        scheme: "file",
+        language: "*",
+    }, new AegisCodeActionProvider(), {
+        providedCodeActionKinds: [
+            vscode.CodeActionKind.QuickFix,
+        ],
+    });
+    context.subscriptions.push(diagnosticCollection, fastScanCommand, fastScanCurrentFileCommand, deepAnalysisCommand, applyFixCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
 }
 async function fastScanCurrentFile() {
     const editor = vscode.window.activeTextEditor;
@@ -259,6 +269,72 @@ async function requestAnalysis(input) {
     finally {
         clearTimeout(timeout);
     }
+}
+class AegisCodeActionProvider {
+    provideCodeActions(document, _range, context) {
+        const storedDiagnostics = diagnosticCollection?.get(document.uri) ?? [];
+        const aegisDiagnostics = [
+            ...context.diagnostics,
+            ...storedDiagnostics,
+        ].filter((diagnostic, index, diagnostics) => diagnostic.source === "Aegis" &&
+            diagnostics.findIndex((candidate) => candidate.source === diagnostic.source &&
+                candidate.message === diagnostic.message &&
+                candidate.range.isEqual(diagnostic.range)) === index);
+        if (aegisDiagnostics.length === 0) {
+            return [];
+        }
+        const actions = [];
+        for (const diagnostic of aegisDiagnostics) {
+            const deepAnalysisAction = new vscode.CodeAction("Aegis: Run Deep Analysis", vscode.CodeActionKind.QuickFix);
+            deepAnalysisAction.diagnostics = [diagnostic];
+            deepAnalysisAction.isPreferred = true;
+            deepAnalysisAction.command = {
+                command: "aegis.deepAnalyzeDiagnostic",
+                title: "Run Aegis Deep Analysis",
+                arguments: [
+                    document.uri,
+                    diagnostic.range,
+                ],
+            };
+            actions.push(deepAnalysisAction);
+        }
+        const analysisMatchesDocument = lastAnalysis?.documentUri === document.uri.toString();
+        if (analysisMatchesDocument && lastAnalysis) {
+            const openReportAction = new vscode.CodeAction("Aegis: Open Security Report", vscode.CodeActionKind.QuickFix);
+            openReportAction.command = {
+                command: "aegis.openLastSecurityReport",
+                title: "Open Aegis Security Report",
+            };
+            actions.push(openReportAction);
+            if (lastAnalysis.mode === "deep" &&
+                findFirstPatch(lastAnalysis.response)) {
+                const applyFixAction = new vscode.CodeAction("Aegis: Apply Secure Fix", vscode.CodeActionKind.QuickFix);
+                applyFixAction.command = {
+                    command: "aegis.applySecureFix",
+                    title: "Apply Aegis Secure Fix",
+                };
+                actions.push(applyFixAction);
+            }
+        }
+        return actions;
+    }
+}
+async function deepAnalyzeDiagnostic(documentUri, range) {
+    const document = await vscode.workspace.openTextDocument(documentUri);
+    const editor = await vscode.window.showTextDocument(document, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.One,
+    });
+    editor.selection = new vscode.Selection(range.start, range.end);
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+    await analyzeSelectedCode("deep");
+}
+async function openLastSecurityReport() {
+    if (!lastAnalysis) {
+        void vscode.window.showWarningMessage("Aegis: No previous security report is available.");
+        return;
+    }
+    await showAnalysisResult(lastAnalysis.response, lastAnalysis.mode);
 }
 function updateDiagnostics(document, result, lineOffset) {
     if (!diagnosticCollection) {
