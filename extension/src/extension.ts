@@ -62,6 +62,11 @@ export function activate(context: vscode.ExtensionContext): void {
     async () => analyzeSelectedCode("fast"),
   );
 
+  const fastScanCurrentFileCommand = vscode.commands.registerCommand(
+    "aegis.fastScanCurrentFile",
+    fastScanCurrentFile,
+  );
+
   const deepAnalysisCommand = vscode.commands.registerCommand(
     "aegis.deepAnalyzeSelectedCode",
     async () => analyzeSelectedCode("deep"),
@@ -74,9 +79,95 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     fastScanCommand,
+    fastScanCurrentFileCommand,
     deepAnalysisCommand,
     applyFixCommand,
   );
+}
+
+async function fastScanCurrentFile(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+
+  if (!editor) {
+    void vscode.window.showErrorMessage(
+      "Aegis: No active editor was found.",
+    );
+    return;
+  }
+
+  const document = editor.document;
+  const code = document.getText();
+
+  if (!code.trim()) {
+    void vscode.window.showWarningMessage(
+      "Aegis: The current file is empty.",
+    );
+    return;
+  }
+
+  const filename = path.basename(document.fileName || "unknown.py");
+  const language = normalizeLanguage(document.languageId);
+
+  const configuration = vscode.workspace.getConfiguration("aegis");
+
+  const backendUrl = configuration
+    .get<string>("backendUrl", "http://127.0.0.1:8000")
+    .replace(/\/+$/, "");
+
+  try {
+    const result = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "Aegis is scanning the current file",
+        cancellable: false,
+      },
+      async () =>
+        requestAnalysis({
+          backendUrl,
+          code,
+          filename,
+          language,
+          mode: "fast",
+        }),
+    );
+
+    lastAnalysis = {
+      documentUri: document.uri.toString(),
+      documentVersion: document.version,
+      selection: new vscode.Range(
+        document.positionAt(0),
+        document.positionAt(code.length),
+      ),
+      response: result,
+      mode: "fast",
+    };
+
+    await showAnalysisResult(result, "fast");
+
+    if (result.findings.length > 0) {
+      const action = await vscode.window.showWarningMessage(
+        `Aegis Fast Scan found ${result.findings.length} suspicious finding(s).`,
+        "Run Deep Analysis",
+        "Keep Report Open",
+      );
+
+      if (action === "Run Deep Analysis") {
+        editor.selection = new vscode.Selection(
+          document.positionAt(0),
+          document.positionAt(code.length),
+        );
+
+        await analyzeSelectedCode("deep");
+      }
+    }
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unknown analysis error.";
+
+    void vscode.window.showErrorMessage(`Aegis: ${message}`);
+  }
 }
 
 async function analyzeSelectedCode(mode: AnalysisMode): Promise<void> {

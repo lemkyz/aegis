@@ -26,6 +26,11 @@
         "category": "Aegis"
       },
       {
+        "command": "aegis.fastScanCurrentFile",
+        "title": "Aegis: Fast Scan Current File",
+        "category": "Aegis"
+      },
+      {
         "command": "aegis.deepAnalyzeSelectedCode",
         "title": "Aegis: Deep Analysis Selected Code",
         "category": "Aegis"
@@ -44,14 +49,19 @@
           "group": "aegis@1"
         },
         {
+          "command": "aegis.fastScanCurrentFile",
+          "when": "editorTextFocus",
+          "group": "aegis@2"
+        },
+        {
           "command": "aegis.deepAnalyzeSelectedCode",
           "when": "editorHasSelection",
-          "group": "aegis@2"
+          "group": "aegis@3"
         },
         {
           "command": "aegis.applySecureFix",
           "when": "editorHasSelection",
-          "group": "aegis@3"
+          "group": "aegis@4"
         }
       ]
     },
