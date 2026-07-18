@@ -445,6 +445,15 @@ function buildMarkdownReport(
         `  - Severity: ${evidence.severity}`,
         `  - ${evidence.message}`,
       );
+
+      if (evidence.code) {
+        lines.push(
+          "",
+          `\`\`\`${result.language}`,
+          evidence.code,
+          "\`\`\`",
+        );
+      }
     });
 
     lines.push(

@@ -253,6 +253,9 @@ function buildMarkdownReport(result, mode) {
         lines.push("", "### Scanner Evidence", "");
         finding.scanner_evidence.forEach((evidence) => {
             lines.push(`- **${evidence.tool} / ${evidence.rule_id}**`, `  - Lines: ${evidence.line_start}-${evidence.line_end}`, `  - Severity: ${evidence.severity}`, `  - ${evidence.message}`);
+            if (evidence.code) {
+                lines.push("", `\`\`\`${result.language}`, evidence.code, "\`\`\`");
+            }
         });
         lines.push("", "### Recommended Fix", "", finding.recommended_fix, "");
         if (finding.false_positive_notes.length > 0) {

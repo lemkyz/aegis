@@ -74,7 +74,11 @@ class SemgrepScanner:
                 ) from exc
 
             return [
-                self._normalize_result(result, filename)
+                self._normalize_result(
+                    result,
+                    filename,
+                    code,
+                )
                 for result in payload.get("results", [])
             ]
 
@@ -130,6 +134,7 @@ class SemgrepScanner:
         cls,
         result: dict[str, Any],
         original_filename: str,
+        source_code: str,
     ) -> ScannerEvidence:
         extra = result.get("extra", {})
         metadata = extra.get("metadata", {})
@@ -141,7 +146,21 @@ class SemgrepScanner:
         code_lines = extra.get("lines")
 
         if not code_lines or code_lines == "requires login":
-            code_lines = None
+            line_start = int(
+                result.get("start", {}).get("line", 1)
+            )
+            line_end = int(
+                result.get("end", {}).get("line", line_start)
+            )
+
+            source_lines = source_code.splitlines()
+
+            code_lines = "\n".join(
+                source_lines[
+                    max(line_start - 1, 0):
+                    min(line_end, len(source_lines))
+                ]
+            ) or None
 
         message = str(
             extra.get("message", "Semgrep finding")
