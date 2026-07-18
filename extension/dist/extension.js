@@ -44,6 +44,7 @@ function activate(context) {
         vscode.languages.createDiagnosticCollection("aegis");
     const fastScanCommand = vscode.commands.registerCommand("aegis.fastScanSelectedCode", async () => analyzeSelectedCode("fast"));
     const fastScanCurrentFileCommand = vscode.commands.registerCommand("aegis.fastScanCurrentFile", fastScanCurrentFile);
+    const scanWorkspaceCommand = vscode.commands.registerCommand("aegis.scanWorkspace", scanEntireWorkspace);
     const deepAnalysisCommand = vscode.commands.registerCommand("aegis.deepAnalyzeSelectedCode", async () => analyzeSelectedCode("deep"));
     const applyFixCommand = vscode.commands.registerCommand("aegis.applySecureFix", applySecureFix);
     const deepAnalyzeDiagnosticCommand = vscode.commands.registerCommand("aegis.deepAnalyzeDiagnostic", deepAnalyzeDiagnostic);
@@ -56,7 +57,157 @@ function activate(context) {
             vscode.CodeActionKind.QuickFix,
         ],
     });
-    context.subscriptions.push(diagnosticCollection, fastScanCommand, fastScanCurrentFileCommand, deepAnalysisCommand, applyFixCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
+    context.subscriptions.push(diagnosticCollection, fastScanCommand, fastScanCurrentFileCommand, scanWorkspaceCommand, deepAnalysisCommand, applyFixCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
+}
+async function scanEntireWorkspace() {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+        void vscode.window.showWarningMessage("Aegis: Open a workspace folder before running Workspace Scan.");
+        return;
+    }
+    const configuration = vscode.workspace.getConfiguration("aegis");
+    const backendUrl = configuration
+        .get("backendUrl", "http://127.0.0.1:8000")
+        .replace(/\/+$/, "");
+    const includePattern = "**/*.{py,js,jsx,ts,tsx}";
+    const excludePattern = "**/{.git,node_modules,.venv,venv,dist,build,out,coverage,__pycache__,.pytest_cache,.mypy_cache}/**";
+    const fileUris = await vscode.workspace.findFiles(includePattern, excludePattern, 500);
+    if (fileUris.length === 0) {
+        void vscode.window.showInformationMessage("Aegis: No supported source files were found in this workspace.");
+        return;
+    }
+    diagnosticCollection?.clear();
+    const summary = {
+        filesDiscovered: fileUris.length,
+        filesScanned: 0,
+        filesSkipped: 0,
+        filesFailed: 0,
+        results: [],
+        errors: [],
+    };
+    await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Aegis is scanning the workspace",
+        cancellable: true,
+    }, async (progress, cancellationToken) => {
+        const increment = 100 / fileUris.length;
+        for (const [index, uri] of fileUris.entries()) {
+            if (cancellationToken.isCancellationRequested) {
+                break;
+            }
+            const relativePath = vscode.workspace.asRelativePath(uri, false);
+            progress.report({
+                increment,
+                message: `${index + 1}/${fileUris.length} · ${relativePath}`,
+            });
+            try {
+                const document = await vscode.workspace.openTextDocument(uri);
+                const code = document.getText();
+                if (!code.trim()) {
+                    summary.filesSkipped += 1;
+                    continue;
+                }
+                if (code.length > 1_000_000) {
+                    summary.filesSkipped += 1;
+                    summary.errors.push(`${relativePath}: skipped because the file exceeds 1 MB.`);
+                    continue;
+                }
+                const result = await requestAnalysis({
+                    backendUrl,
+                    code,
+                    filename: relativePath,
+                    language: normalizeLanguage(document.languageId),
+                    mode: "fast",
+                });
+                summary.filesScanned += 1;
+                summary.results.push({
+                    uri,
+                    relativePath,
+                    response: result,
+                });
+                updateDiagnostics(document, result, 0);
+            }
+            catch (error) {
+                summary.filesFailed += 1;
+                const message = error instanceof Error
+                    ? error.message
+                    : "Unknown scan error.";
+                summary.errors.push(`${relativePath}: ${message}`);
+            }
+        }
+    });
+    await showWorkspaceScanReport(summary);
+    const totalFindings = summary.results.reduce((total, result) => total + result.response.findings.length, 0);
+    if (totalFindings === 0) {
+        void vscode.window.showInformationMessage(`Aegis Workspace Scan completed: ${summary.filesScanned} file(s) scanned and no findings detected.`);
+        return;
+    }
+    const action = await vscode.window.showWarningMessage(`Aegis Workspace Scan found ${totalFindings} security finding(s) across ${summary.filesScanned} scanned file(s).`, "Open Problems", "Keep Report Open");
+    if (action === "Open Problems") {
+        await vscode.commands.executeCommand("workbench.actions.view.problems");
+    }
+}
+async function showWorkspaceScanReport(summary) {
+    const content = buildWorkspaceScanReport(summary);
+    const reportDocument = await vscode.workspace.openTextDocument({
+        language: "markdown",
+        content,
+    });
+    await vscode.window.showTextDocument(reportDocument, {
+        preview: true,
+        viewColumn: vscode.ViewColumn.Beside,
+    });
+}
+function buildWorkspaceScanReport(summary) {
+    const findings = summary.results.flatMap((result) => result.response.findings.map((finding) => ({
+        relativePath: result.relativePath,
+        finding,
+    })));
+    const countSeverity = (severity) => findings.filter((item) => item.finding.severity === severity).length;
+    const lines = [
+        "# Aegis Workspace Security Scan",
+        "",
+        `- **Files discovered:** ${summary.filesDiscovered}`,
+        `- **Files scanned:** ${summary.filesScanned}`,
+        `- **Files skipped:** ${summary.filesSkipped}`,
+        `- **Files failed:** ${summary.filesFailed}`,
+        `- **Total findings:** ${findings.length}`,
+        "",
+        "## Severity Summary",
+        "",
+        `- **Critical:** ${countSeverity("critical")}`,
+        `- **High:** ${countSeverity("high")}`,
+        `- **Medium:** ${countSeverity("medium")}`,
+        `- **Low:** ${countSeverity("low")}`,
+        `- **Info:** ${countSeverity("info")}`,
+        "",
+    ];
+    if (findings.length === 0) {
+        lines.push("No meaningful security finding was detected in the scanned files.", "", "> This result does not guarantee that the workspace is completely secure.");
+    }
+    else {
+        lines.push("## Findings", "");
+        findings.forEach((item, index) => {
+            const finding = item.finding;
+            lines.push(`### ${index + 1}. ${finding.title}`, "", `- **File:** \`${item.relativePath}\``, `- **Severity:** ${finding.severity.toUpperCase()}`, `- **Confidence:** ${Math.round(finding.confidence * 100)}%`, `- **CWE:** ${finding.cwe.join(", ") || "Not specified"}`, `- **OWASP:** ${finding.owasp.join(", ") || "Not specified"}`, "", finding.summary, "");
+            if (finding.scanner_evidence.length > 0) {
+                lines.push("#### Evidence", "");
+                for (const evidence of finding.scanner_evidence) {
+                    lines.push(`- Lines ${evidence.line_start}-${evidence.line_end}: ${evidence.message}`);
+                }
+                lines.push("");
+            }
+            lines.push("---", "");
+        });
+    }
+    if (summary.errors.length > 0) {
+        lines.push("## Scan Warnings", "");
+        for (const error of summary.errors) {
+            lines.push(`- ${error}`);
+        }
+        lines.push("");
+    }
+    return lines.join("\n");
 }
 async function fastScanCurrentFile() {
     const editor = vscode.window.activeTextEditor;

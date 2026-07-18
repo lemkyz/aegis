@@ -31,6 +31,11 @@
         "category": "Aegis"
       },
       {
+        "command": "aegis.scanWorkspace",
+        "title": "Aegis: Scan Entire Workspace",
+        "category": "Aegis"
+      },
+      {
         "command": "aegis.deepAnalyzeSelectedCode",
         "title": "Aegis: Deep Analysis Selected Code",
         "category": "Aegis"
@@ -62,6 +67,13 @@
           "command": "aegis.applySecureFix",
           "when": "editorHasSelection",
           "group": "aegis@4"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "aegis.scanWorkspace",
+          "when": "explorerResourceIsFolder",
+          "group": "aegis@1"
         }
       ]
     },
