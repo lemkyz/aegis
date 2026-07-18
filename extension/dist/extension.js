@@ -39,11 +39,12 @@ const path = __importStar(require("node:path"));
 const vscode = __importStar(require("vscode"));
 let lastAnalysis;
 function activate(context) {
-    const analyzeCommand = vscode.commands.registerCommand("aegis.analyzeSelectedCode", analyzeSelectedCode);
+    const fastScanCommand = vscode.commands.registerCommand("aegis.fastScanSelectedCode", async () => analyzeSelectedCode("fast"));
+    const deepAnalysisCommand = vscode.commands.registerCommand("aegis.deepAnalyzeSelectedCode", async () => analyzeSelectedCode("deep"));
     const applyFixCommand = vscode.commands.registerCommand("aegis.applySecureFix", applySecureFix);
-    context.subscriptions.push(analyzeCommand, applyFixCommand);
+    context.subscriptions.push(fastScanCommand, deepAnalysisCommand, applyFixCommand);
 }
-async function analyzeSelectedCode() {
+async function analyzeSelectedCode(mode) {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
         void vscode.window.showErrorMessage("Aegis: Açık bir editör bulunamadı.");
@@ -62,26 +63,38 @@ async function analyzeSelectedCode() {
     const backendUrl = configuration
         .get("backendUrl", "http://127.0.0.1:8000")
         .replace(/\/+$/, "");
+    const progressTitle = mode === "fast"
+        ? "Aegis hızlı güvenlik taraması yapıyor"
+        : "Aegis derin AI analizi yapıyor";
     try {
         const result = await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: "Aegis seçili kodu analiz ediyor",
+            title: progressTitle,
             cancellable: false,
         }, async () => requestAnalysis({
             backendUrl,
             code: selectedCode,
             filename,
             language,
+            mode,
         }));
         lastAnalysis = {
             documentUri: document.uri.toString(),
             documentVersion: document.version,
             selection,
             response: result,
+            mode,
         };
-        await showAnalysisResult(result);
+        await showAnalysisResult(result, mode);
+        if (mode === "fast" && result.findings.length > 0) {
+            const action = await vscode.window.showWarningMessage(`Aegis Fast Scan ${result.findings.length} şüpheli bulgu tespit etti.`, "Deep Analysis çalıştır", "Raporu açık bırak");
+            if (action === "Deep Analysis çalıştır") {
+                await analyzeSelectedCode("deep");
+            }
+            return;
+        }
         const firstPatch = findFirstPatch(result);
-        if (firstPatch) {
+        if (mode === "deep" && firstPatch) {
             const action = await vscode.window.showInformationMessage(`Aegis ${result.findings.length} güvenlik bulgusu tespit etti.`, "Güvenli düzeltmeyi uygula", "Raporu açık bırak");
             if (action === "Güvenli düzeltmeyi uygula") {
                 await applySecureFix();
@@ -97,7 +110,11 @@ async function analyzeSelectedCode() {
 }
 async function applySecureFix() {
     if (!lastAnalysis) {
-        void vscode.window.showWarningMessage("Aegis: Önce seçili kodu analiz et.");
+        void vscode.window.showWarningMessage("Aegis: Önce Deep Analysis çalıştır.");
+        return;
+    }
+    if (lastAnalysis.mode !== "deep") {
+        void vscode.window.showWarningMessage("Aegis: Fast Scan patch üretmez. Önce Deep Analysis çalıştır.");
         return;
     }
     const editor = vscode.window.activeTextEditor;
@@ -129,7 +146,7 @@ async function applySecureFix() {
     });
     const decision = await vscode.window.showWarningMessage("Aegis seçili kodu önerilen güvenli patch ile değiştirecek.", {
         modal: true,
-        detail: "Değişiklik yalnızca açık dosyadaki analiz edilmiş seçim alanına uygulanacaktır.",
+        detail: "Değişiklik yalnızca analiz edilmiş seçim alanına uygulanacaktır.",
     }, "Düzeltmeyi uygula", "İptal");
     if (decision !== "Düzeltmeyi uygula") {
         return;
@@ -143,13 +160,17 @@ async function applySecureFix() {
     }
     await editor.document.save();
     lastAnalysis = undefined;
-    void vscode.window.showInformationMessage("Aegis: Güvenli düzeltme uygulandı. Kodu yeniden analiz et.");
+    void vscode.window.showInformationMessage("Aegis: Güvenli düzeltme uygulandı. Fast Scan ile tekrar doğrula.");
 }
 async function requestAnalysis(input) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 300_000);
+    const timeoutMilliseconds = input.mode === "fast" ? 30_000 : 300_000;
+    const timeout = setTimeout(() => controller.abort(), timeoutMilliseconds);
+    const endpoint = input.mode === "fast"
+        ? "/v1/analyze/fast"
+        : "/v1/analyze/deep";
     try {
-        const response = await fetch(`${input.backendUrl}/v1/analyze`, {
+        const response = await fetch(`${input.backendUrl}${endpoint}`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -169,7 +190,10 @@ async function requestAnalysis(input) {
     }
     catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
-            throw new Error("Analiz beş dakika sonunda zaman aşımına uğradı.");
+            const timeoutMessage = input.mode === "fast"
+                ? "Fast Scan 30 saniye sonunda zaman aşımına uğradı."
+                : "Deep Analysis beş dakika sonunda zaman aşımına uğradı.";
+            throw new Error(timeoutMessage);
         }
         throw error;
     }
@@ -177,10 +201,10 @@ async function requestAnalysis(input) {
         clearTimeout(timeout);
     }
 }
-async function showAnalysisResult(result) {
+async function showAnalysisResult(result, mode) {
     const document = await vscode.workspace.openTextDocument({
         language: "markdown",
-        content: buildMarkdownReport(result),
+        content: buildMarkdownReport(result, mode),
     });
     await vscode.window.showTextDocument(document, {
         preview: true,
@@ -188,8 +212,8 @@ async function showAnalysisResult(result) {
     });
 }
 function findFirstPatch(result) {
-    return result.findings.find((finding) => finding.proposed_patch &&
-        finding.proposed_patch.trim().length > 0)?.proposed_patch ?? undefined;
+    return (result.findings.find((finding) => finding.proposed_patch &&
+        finding.proposed_patch.trim().length > 0)?.proposed_patch ?? undefined);
 }
 function preserveIndentation(originalCode, proposedPatch) {
     const sourceLine = originalCode
@@ -201,17 +225,22 @@ function preserveIndentation(originalCode, proposedPatch) {
         .map((line) => (line.length > 0 ? `${indentation}${line}` : line))
         .join("\n");
 }
-function buildMarkdownReport(result) {
+function buildMarkdownReport(result, mode) {
+    const modeLabel = mode === "fast" ? "Fast Scan" : "Deep Analysis";
     const lines = [
-        "# Aegis Security Analysis",
+        `# Aegis ${modeLabel}`,
         "",
         `- **File:** ${result.filename}`,
         `- **Language:** ${result.language}`,
+        `- **Mode:** ${modeLabel}`,
         `- **Model:** ${result.model}`,
         `- **Scanner:** ${result.scanner}`,
         `- **Findings:** ${result.findings.length}`,
         "",
     ];
+    if (mode === "fast") {
+        lines.push("> Fast Scan yalnızca yerel scanner kanıtlarını gösterir. AI değerlendirmesi ve patch için Deep Analysis çalıştır.", "");
+    }
     if (result.findings.length === 0) {
         lines.push("Anlamlı bir güvenlik bulgusu tespit edilmedi.", "", "> Bu sonuç kodun tamamen güvenli olduğunu garanti etmez.");
         return lines.join("\n");
@@ -226,6 +255,13 @@ function buildMarkdownReport(result) {
             lines.push(`- **${evidence.tool} / ${evidence.rule_id}**`, `  - Lines: ${evidence.line_start}-${evidence.line_end}`, `  - Severity: ${evidence.severity}`, `  - ${evidence.message}`);
         });
         lines.push("", "### Recommended Fix", "", finding.recommended_fix, "");
+        if (finding.false_positive_notes.length > 0) {
+            lines.push("### Notes", "");
+            finding.false_positive_notes.forEach((note) => {
+                lines.push(`- ${note}`);
+            });
+            lines.push("");
+        }
         if (finding.proposed_patch) {
             lines.push("### Proposed Patch", "", `\`\`\`${result.language}`, finding.proposed_patch, "```", "");
         }
