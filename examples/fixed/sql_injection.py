@@ -1,3 +1,6 @@
+import sqlite3
+
+
 def get_user(user_id):
     db = sqlite3.connect("app.db")
     query = "SELECT * FROM users WHERE id = ?"

@@ -47,11 +47,11 @@ function activate(context) {
 async function analyzeSelectedCode(mode) {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
-        void vscode.window.showErrorMessage("Aegis: Açık bir editör bulunamadı.");
+        void vscode.window.showErrorMessage("Aegis: No active editor was found.");
         return;
     }
     if (editor.selection.isEmpty) {
-        void vscode.window.showWarningMessage("Aegis: Önce analiz edilecek kodu seç.");
+        void vscode.window.showWarningMessage("Aegis: Select the code you want to analyze first.");
         return;
     }
     const document = editor.document;
@@ -64,8 +64,8 @@ async function analyzeSelectedCode(mode) {
         .get("backendUrl", "http://127.0.0.1:8000")
         .replace(/\/+$/, "");
     const progressTitle = mode === "fast"
-        ? "Aegis hızlı güvenlik taraması yapıyor"
-        : "Aegis derin AI analizi yapıyor";
+        ? "Aegis is running a fast security scan"
+        : "Aegis is running deep AI analysis";
     try {
         const result = await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -87,16 +87,16 @@ async function analyzeSelectedCode(mode) {
         };
         await showAnalysisResult(result, mode);
         if (mode === "fast" && result.findings.length > 0) {
-            const action = await vscode.window.showWarningMessage(`Aegis Fast Scan ${result.findings.length} şüpheli bulgu tespit etti.`, "Deep Analysis çalıştır", "Raporu açık bırak");
-            if (action === "Deep Analysis çalıştır") {
+            const action = await vscode.window.showWarningMessage(`Aegis Fast Scan ${result.findings.length} suspicious finding(s).`, "Run Deep Analysis", "Keep Report Open");
+            if (action === "Run Deep Analysis") {
                 await analyzeSelectedCode("deep");
             }
             return;
         }
         const firstPatch = findFirstPatch(result);
         if (mode === "deep" && firstPatch) {
-            const action = await vscode.window.showInformationMessage(`Aegis ${result.findings.length} güvenlik bulgusu tespit etti.`, "Güvenli düzeltmeyi uygula", "Raporu açık bırak");
-            if (action === "Güvenli düzeltmeyi uygula") {
+            const action = await vscode.window.showInformationMessage(`Aegis ${result.findings.length} security finding(s).`, "Apply Secure Fix", "Keep Report Open");
+            if (action === "Apply Secure Fix") {
                 await applySecureFix();
             }
         }
@@ -104,35 +104,35 @@ async function analyzeSelectedCode(mode) {
     catch (error) {
         const message = error instanceof Error
             ? error.message
-            : "Bilinmeyen analiz hatası.";
+            : "Unknown analysis error.";
         void vscode.window.showErrorMessage(`Aegis: ${message}`);
     }
 }
 async function applySecureFix() {
     if (!lastAnalysis) {
-        void vscode.window.showWarningMessage("Aegis: Önce Deep Analysis çalıştır.");
+        void vscode.window.showWarningMessage("Aegis: Önce Run Deep Analysis.");
         return;
     }
     if (lastAnalysis.mode !== "deep") {
-        void vscode.window.showWarningMessage("Aegis: Fast Scan patch üretmez. Önce Deep Analysis çalıştır.");
+        void vscode.window.showWarningMessage("Aegis: Fast Scan patch üretmez. Önce Run Deep Analysis.");
         return;
     }
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
-        void vscode.window.showErrorMessage("Aegis: Düzeltmenin uygulanacağı editör bulunamadı.");
+        void vscode.window.showErrorMessage("Aegis: The editor for applying the fix was not found.");
         return;
     }
     if (editor.document.uri.toString() !== lastAnalysis.documentUri) {
-        void vscode.window.showWarningMessage("Aegis: Analiz edilen dosya şu anda açık değil.");
+        void vscode.window.showWarningMessage("Aegis: The analyzed file is not currently open.");
         return;
     }
     if (editor.document.version !== lastAnalysis.documentVersion) {
-        void vscode.window.showWarningMessage("Aegis: Dosya analizden sonra değiştirildi. Yeniden analiz et.");
+        void vscode.window.showWarningMessage("Aegis: The file changed after analysis. Run the analysis again.");
         return;
     }
     const patch = findFirstPatch(lastAnalysis.response);
     if (!patch) {
-        void vscode.window.showWarningMessage("Aegis: Uygulanabilir bir güvenli patch bulunamadı.");
+        void vscode.window.showWarningMessage("Aegis: No applicable secure patch was found.");
         return;
     }
     const originalCode = editor.document.getText(lastAnalysis.selection);
@@ -144,23 +144,23 @@ async function applySecureFix() {
         preview: true,
         viewColumn: vscode.ViewColumn.Beside,
     });
-    const decision = await vscode.window.showWarningMessage("Aegis seçili kodu önerilen güvenli patch ile değiştirecek.", {
+    const decision = await vscode.window.showWarningMessage("Aegis will replace the selected code with the proposed secure patch.", {
         modal: true,
-        detail: "Değişiklik yalnızca analiz edilmiş seçim alanına uygulanacaktır.",
-    }, "Düzeltmeyi uygula", "İptal");
-    if (decision !== "Düzeltmeyi uygula") {
+        detail: "The change will only be applied to the analyzed selection.",
+    }, "Apply Fix", "Cancel");
+    if (decision !== "Apply Fix") {
         return;
     }
     const edit = new vscode.WorkspaceEdit();
     edit.replace(editor.document.uri, lastAnalysis.selection, preserveIndentation(originalCode, patch));
     const applied = await vscode.workspace.applyEdit(edit);
     if (!applied) {
-        void vscode.window.showErrorMessage("Aegis: Güvenli düzeltme uygulanamadı.");
+        void vscode.window.showErrorMessage("Aegis: The secure fix could not be applied.");
         return;
     }
     await editor.document.save();
     lastAnalysis = undefined;
-    void vscode.window.showInformationMessage("Aegis: Güvenli düzeltme uygulandı. Fast Scan ile tekrar doğrula.");
+    void vscode.window.showInformationMessage("Aegis: The secure fix was applied. Verify it with Fast Scan.");
 }
 async function requestAnalysis(input) {
     const controller = new AbortController();
@@ -191,8 +191,8 @@ async function requestAnalysis(input) {
     catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
             const timeoutMessage = input.mode === "fast"
-                ? "Fast Scan 30 saniye sonunda zaman aşımına uğradı."
-                : "Deep Analysis beş dakika sonunda zaman aşımına uğradı.";
+                ? "Fast Scan timed out after 30 seconds."
+                : "Deep Analysis timed out after five minutes.";
             throw new Error(timeoutMessage);
         }
         throw error;
@@ -239,10 +239,10 @@ function buildMarkdownReport(result, mode) {
         "",
     ];
     if (mode === "fast") {
-        lines.push("> Fast Scan yalnızca yerel scanner kanıtlarını gösterir. AI değerlendirmesi ve patch için Deep Analysis çalıştır.", "");
+        lines.push("> Fast Scan displays local scanner evidence only. Run Deep Analysis for AI review and a proposed patch.", "");
     }
     if (result.findings.length === 0) {
-        lines.push("Anlamlı bir güvenlik bulgusu tespit edilmedi.", "", "> Bu sonuç kodun tamamen güvenli olduğunu garanti etmez.");
+        lines.push("No meaningful security finding was detected.", "", "> This result does not guarantee that the code is completely secure.");
         return lines.join("\n");
     }
     result.findings.forEach((finding, index) => {
