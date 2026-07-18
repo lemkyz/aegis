@@ -118,6 +118,7 @@ interface DependencyScanResponse {
 
 let lastAnalysis: LastAnalysis | undefined;
 let latestWorkspaceScan: WorkspaceScanSummary | undefined;
+let latestDependencyScan: DependencyScanResponse | undefined;
 let diagnosticCollection: vscode.DiagnosticCollection | undefined;
 let securityTreeProvider: AegisSecurityTreeProvider | undefined;
 
@@ -137,6 +138,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(
       "aegis.openWorkspaceFinding",
       openWorkspaceFinding,
+    );
+
+  const openDependencyManifestCommand =
+    vscode.commands.registerCommand(
+      "aegis.openDependencyManifest",
+      openDependencyManifest,
     );
 
   const refreshSecurityViewCommand =
@@ -218,6 +225,7 @@ export function activate(context: vscode.ExtensionContext): void {
     diagnosticCollection,
     securityTreeView,
     openWorkspaceFindingCommand,
+    openDependencyManifestCommand,
     refreshSecurityViewCommand,
     fastScanCommand,
     fastScanCurrentFileCommand,
@@ -237,7 +245,10 @@ type SecurityTreeElement =
   | SecuritySummaryTreeItem
   | SecurityFileTreeItem
   | SecurityFindingTreeItem
-  | SecurityMessageTreeItem;
+  | SecurityMessageTreeItem
+  | DependencyRootTreeItem
+  | DependencyPackageTreeItem
+  | DependencyVulnerabilityTreeItem;
 
 class AegisSecurityTreeProvider
   implements vscode.TreeDataProvider<SecurityTreeElement> {
@@ -262,63 +273,62 @@ class AegisSecurityTreeProvider
   getChildren(
     element?: SecurityTreeElement,
   ): SecurityTreeElement[] {
-    if (!latestWorkspaceScan) {
-      return element
-        ? []
-        : [
-            new SecurityMessageTreeItem(
-              "Run Workspace Scan to populate Aegis Security.",
-              "shield",
-            ),
-          ];
-    }
-
     if (!element) {
-      const findingCount =
-        latestWorkspaceScan.results.reduce(
-          (total, result) =>
-            total + result.response.findings.length,
-          0,
+      const items: SecurityTreeElement[] = [];
+
+      if (latestWorkspaceScan) {
+        const findingCount =
+          latestWorkspaceScan.results.reduce(
+            (total, result) =>
+              total + result.response.findings.length,
+            0,
+          );
+
+        const risk = getWorkspaceRisk(
+          latestWorkspaceScan,
         );
 
-      const risk = getWorkspaceRisk(
-        latestWorkspaceScan,
-      );
-
-      const items: SecurityTreeElement[] = [
-        new SecuritySummaryTreeItem(
-          `Workspace Risk: ${risk.toUpperCase()}`,
-          risk,
-        ),
-        new SecuritySummaryTreeItem(
-          `${findingCount} finding(s) in ${latestWorkspaceScan.filesScanned} file(s)`,
-          "summary",
-        ),
-      ];
-
-      const vulnerableFiles =
-        latestWorkspaceScan.results.filter(
-          (result) =>
-            result.response.findings.length > 0,
-        );
-
-      if (vulnerableFiles.length === 0) {
         items.push(
-          new SecurityMessageTreeItem(
-            "No findings detected",
-            "pass",
+          new SecuritySummaryTreeItem(
+            `Workspace Risk: ${risk.toUpperCase()}`,
+            risk,
+          ),
+          new SecuritySummaryTreeItem(
+            `${findingCount} code finding(s) in ${latestWorkspaceScan.filesScanned} file(s)`,
+            "summary",
           ),
         );
 
-        return items;
+        const vulnerableFiles =
+          latestWorkspaceScan.results.filter(
+            (result) =>
+              result.response.findings.length > 0,
+          );
+
+        items.push(
+          ...vulnerableFiles.map(
+            (result) =>
+              new SecurityFileTreeItem(result),
+          ),
+        );
       }
 
-      items.push(
-        ...vulnerableFiles.map(
-          (result) =>
-            new SecurityFileTreeItem(result),
-        ),
-      );
+      if (latestDependencyScan) {
+        items.push(
+          new DependencyRootTreeItem(
+            latestDependencyScan,
+          ),
+        );
+      }
+
+      if (items.length === 0) {
+        return [
+          new SecurityMessageTreeItem(
+            "Run Workspace Scan or Dependency Scan.",
+            "shield",
+          ),
+        ];
+      }
 
       return items;
     }
@@ -329,6 +339,30 @@ class AegisSecurityTreeProvider
           new SecurityFindingTreeItem(
             element.result,
             finding,
+          ),
+      );
+    }
+
+    if (element instanceof DependencyRootTreeItem) {
+      const grouped =
+        groupDependencyVulnerabilities(
+          element.result.vulnerabilities,
+        );
+
+      return Array.from(grouped.entries()).map(
+        ([packageKey, vulnerabilities]) =>
+          new DependencyPackageTreeItem(
+            packageKey,
+            vulnerabilities,
+          ),
+      );
+    }
+
+    if (element instanceof DependencyPackageTreeItem) {
+      return element.vulnerabilities.map(
+        (vulnerability) =>
+          new DependencyVulnerabilityTreeItem(
+            vulnerability,
           ),
       );
     }
@@ -426,6 +460,229 @@ class SecurityFindingTreeItem extends vscode.TreeItem {
       ],
     };
   }
+}
+
+class DependencyRootTreeItem extends vscode.TreeItem {
+  constructor(
+    readonly result: DependencyScanResponse,
+  ) {
+    super(
+      "Supply Chain Risks",
+      vscode.TreeItemCollapsibleState.Expanded,
+    );
+
+    this.description =
+      `${result.vulnerable_packages} package(s) · ${result.vulnerabilities.length} advisory(s)`;
+
+    this.tooltip =
+      `${result.packages_scanned} package version(s) checked with ${result.scanner.toUpperCase()}`;
+
+    this.contextValue = "aegisDependencyRoot";
+    this.iconPath = new vscode.ThemeIcon(
+      result.vulnerabilities.length > 0
+        ? "package"
+        : "pass-filled",
+    );
+  }
+}
+
+class DependencyPackageTreeItem extends vscode.TreeItem {
+  constructor(
+    readonly packageKey: string,
+    readonly vulnerabilities:
+      DependencyVulnerability[],
+  ) {
+    const first = vulnerabilities[0];
+
+    super(
+      `${first.package_name} ${first.installed_version}`,
+      vscode.TreeItemCollapsibleState.Expanded,
+    );
+
+    const strongest =
+      strongestDependencySeverity(
+        vulnerabilities,
+      );
+
+    this.description =
+      `${strongest.toUpperCase()} · ${vulnerabilities.length} advisory(s)`;
+
+    this.tooltip = new vscode.MarkdownString(
+      [
+        `**${first.package_name} ${first.installed_version}**`,
+        "",
+        `- Ecosystem: ${first.ecosystem}`,
+        `- Manifest: ${first.manifest}`,
+        `- Direct dependency: ${first.direct ? "YES" : "NO"}`,
+        `- Advisory records: ${vulnerabilities.length}`,
+      ].join("\n"),
+    );
+
+    this.contextValue = "aegisDependencyPackage";
+    this.iconPath = dependencySeverityIcon(strongest);
+
+    this.command = {
+      command: "aegis.openDependencyManifest",
+      title: "Open Dependency Manifest",
+      arguments: [first.manifest],
+    };
+  }
+}
+
+class DependencyVulnerabilityTreeItem
+  extends vscode.TreeItem {
+  constructor(
+    readonly vulnerability:
+      DependencyVulnerability,
+  ) {
+    super(
+      vulnerability.id,
+      vscode.TreeItemCollapsibleState.None,
+    );
+
+    const fixed =
+      vulnerability.fixed_versions[0];
+
+    this.description = fixed
+      ? `${vulnerability.severity.toUpperCase()} · fix ${fixed}`
+      : vulnerability.severity.toUpperCase();
+
+    this.tooltip = new vscode.MarkdownString(
+      [
+        `**${vulnerability.summary}**`,
+        "",
+        `- Advisory: ${vulnerability.id}`,
+        `- Severity: ${vulnerability.severity.toUpperCase()}`,
+        `- Package: ${vulnerability.package_name} ${vulnerability.installed_version}`,
+        `- Fixed versions: ${vulnerability.fixed_versions.join(", ") || "Not specified"}`,
+        `- Manifest: ${vulnerability.manifest}`,
+      ].join("\n"),
+    );
+
+    this.contextValue =
+      "aegisDependencyVulnerability";
+
+    this.iconPath = dependencySeverityIcon(
+      vulnerability.severity,
+    );
+
+    this.command = {
+      command: "aegis.openDependencyManifest",
+      title: "Open Dependency Manifest",
+      arguments: [vulnerability.manifest],
+    };
+  }
+}
+
+function groupDependencyVulnerabilities(
+  vulnerabilities: DependencyVulnerability[],
+): Map<string, DependencyVulnerability[]> {
+  const grouped =
+    new Map<string, DependencyVulnerability[]>();
+
+  for (const vulnerability of vulnerabilities) {
+    const key = [
+      vulnerability.ecosystem,
+      vulnerability.package_name.toLowerCase(),
+      vulnerability.installed_version,
+    ].join(":");
+
+    const packageItems = grouped.get(key) ?? [];
+    packageItems.push(vulnerability);
+    grouped.set(key, packageItems);
+  }
+
+  return new Map(
+    Array.from(grouped.entries()).sort(
+      ([left], [right]) =>
+        left.localeCompare(right),
+    ),
+  );
+}
+
+function strongestDependencySeverity(
+  vulnerabilities: DependencyVulnerability[],
+): DependencySeverity {
+  const rank: Record<DependencySeverity, number> = {
+    unknown: 0,
+    low: 1,
+    medium: 2,
+    high: 3,
+    critical: 4,
+  };
+
+  return vulnerabilities.reduce<DependencySeverity>(
+    (strongest, vulnerability) =>
+      rank[vulnerability.severity] >
+      rank[strongest]
+        ? vulnerability.severity
+        : strongest,
+    "unknown",
+  );
+}
+
+function dependencySeverityIcon(
+  severity: DependencySeverity,
+): vscode.ThemeIcon {
+  switch (severity) {
+    case "critical":
+    case "high":
+      return new vscode.ThemeIcon("error");
+
+    case "medium":
+      return new vscode.ThemeIcon("warning");
+
+    case "low":
+      return new vscode.ThemeIcon("info");
+
+    case "unknown":
+    default:
+      return new vscode.ThemeIcon(
+        "question",
+      );
+  }
+}
+
+async function openDependencyManifest(
+  manifest: string,
+): Promise<void> {
+  const normalized =
+    manifest.replaceAll("\\", "/");
+
+  const matches = await vscode.workspace.findFiles(
+    `**/${normalized}`,
+    "**/{.git,node_modules,.venv,venv,dist,build,out}/**",
+    10,
+  );
+
+  const fallbackMatches =
+    matches.length > 0
+      ? matches
+      : await vscode.workspace.findFiles(
+          `**/${path.basename(normalized)}`,
+          "**/{.git,node_modules,.venv,venv,dist,build,out}/**",
+          10,
+        );
+
+  if (fallbackMatches.length === 0) {
+    void vscode.window.showWarningMessage(
+      `Aegis: Could not locate dependency manifest ${manifest}.`,
+    );
+    return;
+  }
+
+  const document =
+    await vscode.workspace.openTextDocument(
+      fallbackMatches[0],
+    );
+
+  await vscode.window.showTextDocument(
+    document,
+    {
+      preview: false,
+      viewColumn: vscode.ViewColumn.One,
+    },
+  );
 }
 
 class SecurityMessageTreeItem extends vscode.TreeItem {
@@ -586,6 +843,9 @@ async function scanDependencies(): Promise<void> {
           packages,
         ),
     );
+
+    latestDependencyScan = result;
+    securityTreeProvider?.refresh();
 
     await showDependencyScanReport(
       result,
@@ -2638,6 +2898,7 @@ export function deactivate(): void {
   diagnosticCollection?.clear();
   diagnosticCollection = undefined;
   securityTreeProvider = undefined;
+  latestDependencyScan = undefined;
   latestWorkspaceScan = undefined;
   lastAnalysis = undefined;
 }
