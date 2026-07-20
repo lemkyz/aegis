@@ -42,6 +42,13 @@ class ScannerEvidence(BaseModel):
     owasp: list[str] = Field(default_factory=list)
     secret: SecretClassification | None = None
 
+    corroborated_by: list[str] = Field(
+        default_factory=list,
+    )
+    related_rule_ids: list[str] = Field(
+        default_factory=list,
+    )
+
 
 class SecurityFinding(BaseModel):
     title: str

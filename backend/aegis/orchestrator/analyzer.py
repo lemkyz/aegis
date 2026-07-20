@@ -501,12 +501,41 @@ class SecurityAnalyzer:
             "medium",
         )
 
-        confidence = 0.85
+        corroborating_tools = list(
+            dict.fromkeys(
+                evidence.corroborated_by
+                or [evidence.tool]
+            )
+        )
+
+        confidence = (
+            0.95
+            if len(corroborating_tools) >= 2
+            else 0.85
+        )
+
         recommended_fix = (
             "Review the flagged code and run Deep Analysis "
             "for a context-aware remediation recommendation."
         )
         additional_notes: list[str] = []
+
+        if len(corroborating_tools) >= 2:
+            additional_notes.append(
+                "Cross-validated by "
+                f"{len(corroborating_tools)} scanners: "
+                + ", ".join(corroborating_tools)
+                + "."
+            )
+
+            if evidence.related_rule_ids:
+                additional_notes.append(
+                    "Correlated rules: "
+                    + ", ".join(
+                        evidence.related_rule_ids
+                    )
+                    + "."
+                )
 
         if evidence.secret:
             confidence = evidence.secret.confidence

@@ -30,3 +30,4 @@ venv/
 backend/.env
 .env
 *.env
+backend/scanners/eslint/node_modules/
