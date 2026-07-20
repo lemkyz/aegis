@@ -5,6 +5,52 @@ import * as vscode from "vscode";
 
 const execFileAsync = promisify(execFile);
 
+const aegisReportScheme = "aegis-report";
+
+type AegisReportKind =
+  | "analysis"
+  | "workspace"
+  | "git-changes"
+  | "dependencies";
+
+class AegisReportContentProvider
+  implements vscode.TextDocumentContentProvider {
+  private readonly contents =
+    new Map<string, string>();
+
+  private readonly changeEmitter =
+    new vscode.EventEmitter<vscode.Uri>();
+
+  readonly onDidChange =
+    this.changeEmitter.event;
+
+  provideTextDocumentContent(
+    uri: vscode.Uri,
+  ): string {
+    return (
+      this.contents.get(uri.toString()) ??
+      "# Aegis Report\n\nNo report content is available."
+    );
+  }
+
+  update(
+    uri: vscode.Uri,
+    content: string,
+  ): void {
+    this.contents.set(
+      uri.toString(),
+      content,
+    );
+
+    this.changeEmitter.fire(uri);
+  }
+
+  dispose(): void {
+    this.contents.clear();
+    this.changeEmitter.dispose();
+  }
+}
+
 type Severity = "info" | "low" | "medium" | "high" | "critical";
 type AnalysisMode = "fast" | "deep";
 
@@ -137,6 +183,8 @@ interface DependencyScanResponse {
 
 let lastAnalysis: LastAnalysis | undefined;
 let latestWorkspaceScan: WorkspaceScanSummary | undefined;
+let reportContentProvider:
+  AegisReportContentProvider | undefined;
 let latestDependencyScan: DependencyScanResponse | undefined;
 let diagnosticCollection: vscode.DiagnosticCollection | undefined;
 let securityTreeProvider: AegisSecurityTreeProvider | undefined;
@@ -144,6 +192,15 @@ let securityTreeProvider: AegisSecurityTreeProvider | undefined;
 export function activate(context: vscode.ExtensionContext): void {
   diagnosticCollection =
     vscode.languages.createDiagnosticCollection("aegis");
+
+  reportContentProvider =
+    new AegisReportContentProvider();
+
+  const reportProviderRegistration =
+    vscode.workspace.registerTextDocumentContentProvider(
+      aegisReportScheme,
+      reportContentProvider,
+    );
 
   securityTreeProvider = new AegisSecurityTreeProvider();
 
@@ -242,6 +299,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     diagnosticCollection,
+    reportContentProvider,
+    reportProviderRegistration,
     securityTreeView,
     openWorkspaceFindingCommand,
     openDependencyManifestCommand,
@@ -1298,6 +1357,53 @@ async function requestDependencyScan(
   }
 }
 
+function aegisReportUri(
+  kind: AegisReportKind,
+): vscode.Uri {
+  return vscode.Uri.from({
+    scheme: aegisReportScheme,
+    path: `/${kind}.md`,
+  });
+}
+
+async function showReusableAegisReport(
+  kind: AegisReportKind,
+  content: string,
+  viewColumn:
+    vscode.ViewColumn =
+      vscode.ViewColumn.Beside,
+): Promise<void> {
+  if (!reportContentProvider) {
+    throw new Error(
+      "Aegis report provider is unavailable.",
+    );
+  }
+
+  const uri = aegisReportUri(kind);
+
+  reportContentProvider.update(
+    uri,
+    content,
+  );
+
+  const document =
+    await vscode.workspace.openTextDocument(uri);
+
+  await vscode.languages.setTextDocumentLanguage(
+    document,
+    "markdown",
+  );
+
+  await vscode.window.showTextDocument(
+    document,
+    {
+      preview: true,
+      preserveFocus: false,
+      viewColumn,
+    },
+  );
+}
+
 async function showDependencyScanReport(
   result: DependencyScanResponse,
   packages: DependencyPackage[],
@@ -1307,18 +1413,9 @@ async function showDependencyScanReport(
     packages,
   );
 
-  const reportDocument =
-    await vscode.workspace.openTextDocument({
-      language: "markdown",
-      content: report,
-    });
-
-  await vscode.window.showTextDocument(
-    reportDocument,
-    {
-      preview: true,
-      viewColumn: vscode.ViewColumn.Beside,
-    },
+  await showReusableAegisReport(
+    "dependencies",
+    report,
   );
 }
 
@@ -1774,18 +1871,9 @@ async function showGitChangesReport(
     heading,
   );
 
-  const reportDocument =
-    await vscode.workspace.openTextDocument({
-      language: "markdown",
-      content,
-    });
-
-  await vscode.window.showTextDocument(
-    reportDocument,
-    {
-      preview: true,
-      viewColumn: vscode.ViewColumn.Beside,
-    },
+  await showReusableAegisReport(
+    "git-changes",
+    content,
   );
 }
 
@@ -1953,18 +2041,9 @@ async function showWorkspaceScanReport(
 ): Promise<void> {
   const content = buildWorkspaceScanReport(summary);
 
-  const reportDocument =
-    await vscode.workspace.openTextDocument({
-      language: "markdown",
-      content,
-    });
-
-  await vscode.window.showTextDocument(
-    reportDocument,
-    {
-      preview: true,
-      viewColumn: vscode.ViewColumn.Beside,
-    },
+  await showReusableAegisReport(
+    "workspace",
+    content,
   );
 }
 
@@ -3140,15 +3219,13 @@ async function showAnalysisResult(
   result: AnalyzeResponse,
   mode: AnalysisMode,
 ): Promise<void> {
-  const document = await vscode.workspace.openTextDocument({
-    language: "markdown",
-    content: buildMarkdownReport(result, mode),
-  });
-
-  await vscode.window.showTextDocument(document, {
-    preview: true,
-    viewColumn: vscode.ViewColumn.Beside,
-  });
+  await showReusableAegisReport(
+    "analysis",
+    buildMarkdownReport(
+      result,
+      mode,
+    ),
+  );
 }
 
 function findFirstPatch(result: AnalyzeResponse): string | undefined {
@@ -3308,6 +3385,7 @@ function normalizeLanguage(languageId: string): string {
 export function deactivate(): void {
   diagnosticCollection?.clear();
   diagnosticCollection = undefined;
+  reportContentProvider = undefined;
   securityTreeProvider = undefined;
   latestDependencyScan = undefined;
   latestWorkspaceScan = undefined;

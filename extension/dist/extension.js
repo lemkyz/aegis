@@ -40,14 +40,36 @@ const path = __importStar(require("node:path"));
 const node_util_1 = require("node:util");
 const vscode = __importStar(require("vscode"));
 const execFileAsync = (0, node_util_1.promisify)(node_child_process_1.execFile);
+const aegisReportScheme = "aegis-report";
+class AegisReportContentProvider {
+    contents = new Map();
+    changeEmitter = new vscode.EventEmitter();
+    onDidChange = this.changeEmitter.event;
+    provideTextDocumentContent(uri) {
+        return (this.contents.get(uri.toString()) ??
+            "# Aegis Report\n\nNo report content is available.");
+    }
+    update(uri, content) {
+        this.contents.set(uri.toString(), content);
+        this.changeEmitter.fire(uri);
+    }
+    dispose() {
+        this.contents.clear();
+        this.changeEmitter.dispose();
+    }
+}
 let lastAnalysis;
 let latestWorkspaceScan;
+let reportContentProvider;
 let latestDependencyScan;
 let diagnosticCollection;
 let securityTreeProvider;
 function activate(context) {
     diagnosticCollection =
         vscode.languages.createDiagnosticCollection("aegis");
+    reportContentProvider =
+        new AegisReportContentProvider();
+    const reportProviderRegistration = vscode.workspace.registerTextDocumentContentProvider(aegisReportScheme, reportContentProvider);
     securityTreeProvider = new AegisSecurityTreeProvider();
     const securityTreeView = vscode.window.createTreeView("aegis.securityView", {
         treeDataProvider: securityTreeProvider,
@@ -74,7 +96,7 @@ function activate(context) {
             vscode.CodeActionKind.QuickFix,
         ],
     });
-    context.subscriptions.push(diagnosticCollection, securityTreeView, openWorkspaceFindingCommand, openDependencyManifestCommand, refreshSecurityViewCommand, fastScanCommand, fastScanCurrentFileCommand, scanWorkspaceCommand, scanDependenciesCommand, scanUncommittedChangesCommand, scanStagedChangesCommand, deepAnalysisCommand, applyFixCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
+    context.subscriptions.push(diagnosticCollection, reportContentProvider, reportProviderRegistration, securityTreeView, openWorkspaceFindingCommand, openDependencyManifestCommand, refreshSecurityViewCommand, fastScanCommand, fastScanCurrentFileCommand, scanWorkspaceCommand, scanDependenciesCommand, scanUncommittedChangesCommand, scanStagedChangesCommand, deepAnalysisCommand, applyFixCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
 }
 class AegisSecurityTreeProvider {
     changeEmitter = new vscode.EventEmitter();
@@ -630,16 +652,29 @@ async function requestDependencyScan(backendUrl, packages) {
         clearTimeout(timeout);
     }
 }
+function aegisReportUri(kind) {
+    return vscode.Uri.from({
+        scheme: aegisReportScheme,
+        path: `/${kind}.md`,
+    });
+}
+async function showReusableAegisReport(kind, content, viewColumn = vscode.ViewColumn.Beside) {
+    if (!reportContentProvider) {
+        throw new Error("Aegis report provider is unavailable.");
+    }
+    const uri = aegisReportUri(kind);
+    reportContentProvider.update(uri, content);
+    const document = await vscode.workspace.openTextDocument(uri);
+    await vscode.languages.setTextDocumentLanguage(document, "markdown");
+    await vscode.window.showTextDocument(document, {
+        preview: true,
+        preserveFocus: false,
+        viewColumn,
+    });
+}
 async function showDependencyScanReport(result, packages) {
     const report = buildDependencyScanReport(result, packages);
-    const reportDocument = await vscode.workspace.openTextDocument({
-        language: "markdown",
-        content: report,
-    });
-    await vscode.window.showTextDocument(reportDocument, {
-        preview: true,
-        viewColumn: vscode.ViewColumn.Beside,
-    });
+    await showReusableAegisReport("dependencies", report);
 }
 function buildDependencyScanReport(result, packages) {
     const severityOrder = {
@@ -880,14 +915,7 @@ async function showGitChangesReport(summary, mode) {
         ? "# Aegis Staged Changes Security Scan"
         : "# Aegis Uncommitted Changes Security Scan";
     const content = baseReport.replace("# Aegis Workspace Security Scan", heading);
-    const reportDocument = await vscode.workspace.openTextDocument({
-        language: "markdown",
-        content,
-    });
-    await vscode.window.showTextDocument(reportDocument, {
-        preview: true,
-        viewColumn: vscode.ViewColumn.Beside,
-    });
+    await showReusableAegisReport("git-changes", content);
 }
 async function scanEntireWorkspace() {
     const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -981,14 +1009,7 @@ async function scanEntireWorkspace() {
 }
 async function showWorkspaceScanReport(summary) {
     const content = buildWorkspaceScanReport(summary);
-    const reportDocument = await vscode.workspace.openTextDocument({
-        language: "markdown",
-        content,
-    });
-    await vscode.window.showTextDocument(reportDocument, {
-        preview: true,
-        viewColumn: vscode.ViewColumn.Beside,
-    });
+    await showReusableAegisReport("workspace", content);
 }
 function buildWorkspaceScanReport(summary) {
     const findings = summary.results.flatMap((result) => result.response.findings.map((finding) => ({
@@ -1626,14 +1647,7 @@ function clampLine(line, document) {
     return Math.max(0, Math.min(line, document.lineCount - 1));
 }
 async function showAnalysisResult(result, mode) {
-    const document = await vscode.workspace.openTextDocument({
-        language: "markdown",
-        content: buildMarkdownReport(result, mode),
-    });
-    await vscode.window.showTextDocument(document, {
-        preview: true,
-        viewColumn: vscode.ViewColumn.Beside,
-    });
+    await showReusableAegisReport("analysis", buildMarkdownReport(result, mode));
 }
 function findFirstPatch(result) {
     return (result.findings.find((finding) => finding.proposed_patch &&
@@ -1712,6 +1726,7 @@ function normalizeLanguage(languageId) {
 function deactivate() {
     diagnosticCollection?.clear();
     diagnosticCollection = undefined;
+    reportContentProvider = undefined;
     securityTreeProvider = undefined;
     latestDependencyScan = undefined;
     latestWorkspaceScan = undefined;
