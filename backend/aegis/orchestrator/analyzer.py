@@ -10,6 +10,7 @@ from aegis.schemas.analysis import (
     SecurityFinding,
 )
 from aegis.security.bandit import BanditScanner
+from aegis.security.eslint import EslintSecurityScanner
 from aegis.security.orchestrator import SecurityScannerOrchestrator
 from aegis.security.semgrep import SemgrepScanner
 
@@ -19,12 +20,14 @@ class SecurityAnalyzer:
         self.model_client = NvidiaModelClient()
         self.semgrep_scanner = SemgrepScanner()
         self.bandit_scanner = BanditScanner()
+        self.eslint_scanner = EslintSecurityScanner()
 
         self.scanner_orchestrator = (
             SecurityScannerOrchestrator(
                 [
                     self.semgrep_scanner,
                     self.bandit_scanner,
+                    self.eslint_scanner,
                 ]
             )
         )

@@ -87,3 +87,28 @@ def test_scanner_failures_are_isolated() -> None:
         ]
 
     asyncio.run(run_test())
+
+
+def test_eslint_scanner_routes_javascript_and_typescript() -> None:
+    from aegis.security.eslint import (
+        EslintSecurityScanner,
+    )
+
+    scanner = EslintSecurityScanner()
+
+    assert scanner.supports_language(
+        "javascript"
+    )
+    assert scanner.supports_language(
+        "typescript"
+    )
+    assert scanner.supports_language(
+        "javascriptreact"
+    )
+    assert scanner.supports_language(
+        "typescriptreact"
+    )
+
+    assert not scanner.supports_language(
+        "python"
+    )
