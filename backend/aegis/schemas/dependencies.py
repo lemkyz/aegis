@@ -37,6 +37,28 @@ class DependencyScanRequest(BaseModel):
     )
 
 
+class DependencyManifestInput(BaseModel):
+    filename: str = Field(
+        min_length=1,
+        max_length=300,
+    )
+    manifest: str = Field(
+        min_length=1,
+        max_length=500,
+    )
+    content: str = Field(
+        min_length=1,
+        max_length=2_000_000,
+    )
+
+
+class DependencyManifestScanRequest(BaseModel):
+    manifests: list[DependencyManifestInput] = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+
 class DependencyVulnerability(BaseModel):
     id: str
     aliases: list[str] = Field(default_factory=list)
@@ -63,3 +85,8 @@ class DependencyScanResponse(BaseModel):
     packages_scanned: int
     vulnerable_packages: int
     vulnerabilities: list[DependencyVulnerability]
+
+
+class DependencyManifestScanResponse(BaseModel):
+    packages: list[DependencyPackage]
+    scan: DependencyScanResponse

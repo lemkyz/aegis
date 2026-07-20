@@ -395,20 +395,22 @@ async function scanDependencies() {
         .get("backendUrl", "http://127.0.0.1:8000")
         .replace(/\/+$/, "");
     try {
-        const packages = await vscode.window.withProgress({
+        const manifests = await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: "Aegis is discovering dependencies",
+            title: "Aegis is discovering dependency files",
             cancellable: false,
-        }, async () => discoverWorkspaceDependencies());
-        if (packages.length === 0) {
-            void vscode.window.showInformationMessage("Aegis: No exact dependency versions were found. Use pinned requirements or a package lockfile.");
+        }, async () => discoverWorkspaceDependencyManifests());
+        if (manifests.length === 0) {
+            void vscode.window.showInformationMessage("Aegis: No supported dependency lockfile or pinned requirements file was found.");
             return;
         }
-        const result = await vscode.window.withProgress({
+        const manifestResult = await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: `Aegis is checking ${packages.length} dependency version(s)`,
+            title: `Aegis is parsing and checking ${manifests.length} dependency file(s)`,
             cancellable: false,
-        }, async () => requestDependencyScan(backendUrl, packages));
+        }, async () => requestDependencyManifestScan(backendUrl, manifests));
+        const packages = manifestResult.packages;
+        const result = manifestResult.scan;
         latestDependencyScan = result;
         securityTreeProvider?.refresh();
         await showDependencyScanReport(result, packages);
@@ -425,27 +427,18 @@ async function scanDependencies() {
         void vscode.window.showErrorMessage(`Aegis Dependency Scan failed: ${message}`);
     }
 }
-async function discoverWorkspaceDependencies() {
-    const manifestUris = await vscode.workspace.findFiles("**/{requirements.txt,package.json,package-lock.json}", "**/{.git,node_modules,.venv,venv,dist,build,out,coverage}/**", 100);
-    const packages = [];
+async function discoverWorkspaceDependencyManifests() {
+    const manifestUris = await vscode.workspace.findFiles("**/{requirements.txt,requirements-*.txt,requirements.*.txt,package-lock.json,pnpm-lock.yaml,pnpm-lock.yml,yarn.lock,poetry.lock,Pipfile.lock,Cargo.lock}", "**/{.git,node_modules,.venv,venv,dist,build,out,coverage,target}/**", 100);
+    const manifests = [];
     for (const uri of manifestUris) {
         const document = await vscode.workspace.openTextDocument(uri);
-        const filename = path.basename(uri.fsPath);
-        const relativePath = vscode.workspace.asRelativePath(uri, false);
-        const content = document.getText();
-        if (filename === "requirements.txt") {
-            packages.push(...parseRequirementsTxt(content, relativePath));
-            continue;
-        }
-        if (filename === "package-lock.json") {
-            packages.push(...parsePackageLock(content, relativePath));
-            continue;
-        }
-        if (filename === "package.json") {
-            packages.push(...parsePackageJson(content, relativePath));
-        }
+        manifests.push({
+            filename: path.basename(uri.fsPath),
+            manifest: vscode.workspace.asRelativePath(uri, false),
+            content: document.getText(),
+        });
     }
-    return deduplicateDependencies(packages);
+    return manifests.sort((left, right) => left.manifest.localeCompare(right.manifest));
 }
 function parseRequirementsTxt(content, manifest) {
     const packages = [];
@@ -613,6 +606,45 @@ function isRecord(value) {
     return (typeof value === "object" &&
         value !== null &&
         !Array.isArray(value));
+}
+async function requestDependencyManifestScan(backendUrl, manifests) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 180_000);
+    try {
+        const response = await fetch(`${backendUrl}/v1/dependencies/manifests/scan`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                manifests,
+            }),
+            signal: controller.signal,
+        });
+        const rawBody = await response.text();
+        if (!response.ok) {
+            let detail = rawBody;
+            try {
+                const payload = JSON.parse(rawBody);
+                detail = payload.detail ?? rawBody;
+            }
+            catch {
+                // Preserve raw response body.
+            }
+            throw new Error(`Backend returned HTTP ${response.status}: ${detail}`);
+        }
+        return JSON.parse(rawBody);
+    }
+    catch (error) {
+        if (error instanceof Error
+            && error.name === "AbortError") {
+            throw new Error("Dependency Scan timed out after three minutes.");
+        }
+        throw error;
+    }
+    finally {
+        clearTimeout(timeout);
+    }
 }
 async function requestDependencyScan(backendUrl, packages) {
     const controller = new AbortController();
