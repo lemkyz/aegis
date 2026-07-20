@@ -1,8 +1,8 @@
+import os
 import hashlib
 import hmac
 import math
 import re
-import secrets
 from collections import Counter
 from collections.abc import Iterable
 
@@ -20,7 +20,18 @@ class SecretIntelligenceEngine:
     fingerprint generation. They are never stored in API responses.
     """
 
-    _process_fingerprint_key = secrets.token_bytes(32)
+    _fingerprint_key_value = os.getenv(
+        "AEGIS_FINGERPRINT_KEY",
+        "",
+    )
+
+    if len(_fingerprint_key_value) < 32:
+        raise RuntimeError(
+            "AEGIS_FINGERPRINT_KEY must be configured with at least "
+            "32 characters before Aegis starts."
+        )
+
+    _fingerprint_key = _fingerprint_key_value.encode("utf-8")
 
     _assignment_pattern = re.compile(
         r"""(?ix)
@@ -302,7 +313,7 @@ class SecretIntelligenceEngine:
         value: str,
     ) -> str:
         digest = hmac.new(
-            cls._process_fingerprint_key,
+            cls._fingerprint_key,
             value.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
