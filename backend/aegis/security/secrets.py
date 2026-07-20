@@ -73,7 +73,6 @@ class SecretIntelligenceEngine:
             |development
             |dev[_-]?only
             |xxxx+
-            |123456
         )
         """,
     )
@@ -110,6 +109,67 @@ class SecretIntelligenceEngine:
                 r"\beyJ[A-Za-z0-9_-]{8,}"
                 r"\.[A-Za-z0-9_-]{8,}"
                 r"\.[A-Za-z0-9_-]{8,}\b"
+            ),
+        ),
+        (
+            "GitLab",
+            "personal_access_token",
+            re.compile(
+                r"\bglpat-[A-Za-z0-9_-]{20,}\b"
+            ),
+        ),
+        (
+            "Slack",
+            "access_token",
+            re.compile(
+                r"\bxox[baprs]-[A-Za-z0-9-]{16,}\b"
+            ),
+        ),
+        (
+            "Stripe",
+            "secret_api_key",
+            re.compile(
+                r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b"
+            ),
+        ),
+        (
+            "Google",
+            "api_key",
+            re.compile(
+                r"\bAIza[A-Za-z0-9_-]{35}\b"
+            ),
+        ),
+        (
+            "Azure",
+            "shared_access_signature",
+            re.compile(
+                r"(?i)\bsv=[^\s&]+"
+                r"(?:&[^\s&=]+=[^\s&]*){2,}"
+                r"&sig=[A-Za-z0-9%+/=_-]{12,}"
+            ),
+        ),
+        (
+            "Discord",
+            "bot_token",
+            re.compile(
+                r"\b[A-Za-z0-9_-]{23,28}"
+                r"\.[A-Za-z0-9_-]{6}"
+                r"\.[A-Za-z0-9_-]{27,40}\b"
+            ),
+        ),
+        (
+            "Twilio",
+            "api_key",
+            re.compile(
+                r"\bSK[0-9a-fA-F]{32}\b"
+            ),
+        ),
+        (
+            "SendGrid",
+            "api_key",
+            re.compile(
+                r"\bSG\.[A-Za-z0-9_-]{16,}"
+                r"\.[A-Za-z0-9_-]{20,}\b"
             ),
         ),
     )
@@ -319,6 +379,19 @@ class SecretIntelligenceEngine:
 
         normalized = value.strip().lower()
 
+        exact_placeholders = {
+            "123456",
+            "password",
+            "password123",
+            "secret",
+            "token",
+            "api_key",
+            "apikey",
+        }
+
+        if normalized in exact_placeholders:
+            return True
+
         if self._placeholder_pattern.search(normalized):
             return True
 
@@ -386,6 +459,58 @@ class SecretIntelligenceEngine:
                 "Deactivate the exposed AWS access key, investigate its "
                 "usage, rotate associated credentials, and prefer an "
                 "IAM role with least privilege."
+            )
+
+        if provider == "GitLab":
+            return (
+                "Revoke the exposed GitLab token, issue a replacement "
+                "with minimum required scopes, and store it outside "
+                "source control."
+            )
+
+        if provider == "Slack":
+            return (
+                "Revoke or rotate the Slack token, inspect recent app "
+                "activity, and load the replacement from a protected "
+                "secret store."
+            )
+
+        if provider == "Stripe":
+            return (
+                "Roll the exposed Stripe key immediately, review recent "
+                "API activity, and use restricted keys wherever possible."
+            )
+
+        if provider == "Google":
+            return (
+                "Rotate the exposed Google API key, restrict it by API "
+                "and application, and remove it from repository history."
+            )
+
+        if provider == "Azure":
+            return (
+                "Revoke or regenerate the exposed Azure credential, "
+                "review its permissions and expiry, and prefer managed "
+                "identity where available."
+            )
+
+        if provider == "Discord":
+            return (
+                "Reset the exposed Discord bot token, investigate bot "
+                "activity, and store the replacement in protected "
+                "runtime configuration."
+            )
+
+        if provider == "Twilio":
+            return (
+                "Revoke the exposed Twilio API key, create a replacement "
+                "with minimum access, and inspect recent account activity."
+            )
+
+        if provider == "SendGrid":
+            return (
+                "Revoke the exposed SendGrid API key, create a restricted "
+                "replacement, and review recent sending activity."
             )
 
         if secret_type == "private_key":
