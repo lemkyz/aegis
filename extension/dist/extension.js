@@ -64,6 +64,7 @@ let latestWorkspaceScan;
 let reportContentProvider;
 let latestDependencyScan;
 let latestAttackSurface;
+let latestThreatModel;
 let diagnosticCollection;
 let securityTreeProvider;
 function activate(context) {
@@ -122,6 +123,9 @@ class AegisSecurityTreeProvider {
                 const vulnerableFiles = latestWorkspaceScan.results.filter((result) => result.response.findings.length > 0);
                 items.push(...vulnerableFiles.map((result) => new SecurityFileTreeItem(result)));
             }
+            if (latestThreatModel) {
+                items.push(new ThreatModelRootTreeItem(latestThreatModel));
+            }
             if (latestAttackSurface) {
                 items.push(new AttackSurfaceRootTreeItem(latestAttackSurface));
             }
@@ -137,6 +141,12 @@ class AegisSecurityTreeProvider {
         }
         if (element instanceof SecurityFileTreeItem) {
             return element.result.response.findings.map((finding) => new SecurityFindingTreeItem(element.result, finding));
+        }
+        if (element instanceof ThreatModelRootTreeItem) {
+            return groupThreatsBySeverity(element.result.threats).map(([severity, threats]) => new ThreatSeverityGroupTreeItem(severity, threats));
+        }
+        if (element instanceof ThreatSeverityGroupTreeItem) {
+            return element.threats.map((threat) => new ThreatFindingTreeItem(threat));
         }
         if (element instanceof AttackSurfaceRootTreeItem) {
             return groupAttackSurfaceNodes(element.result.nodes).map(([kind, nodes]) => new AttackSurfaceGroupTreeItem(kind, nodes));
@@ -214,6 +224,89 @@ class SecurityFindingTreeItem extends vscode.TreeItem {
             arguments: [
                 result.uri,
                 line,
+            ],
+        };
+    }
+}
+class ThreatModelRootTreeItem extends vscode.TreeItem {
+    result;
+    constructor(result) {
+        super("Threat Model", vscode.TreeItemCollapsibleState.Expanded);
+        this.result = result;
+        this.description =
+            `${result.summary.threats_found} threat(s) · `
+                + `${result.summary.assets_found} asset(s)`;
+        this.tooltip = new vscode.MarkdownString([
+            "**Aegis Threat Model**",
+            "",
+            `- Files scanned: ${result.summary.files_scanned}`,
+            `- Threats: ${result.summary.threats_found}`,
+            `- Critical: ${result.summary.critical}`,
+            `- High: ${result.summary.high}`,
+            `- Medium: ${result.summary.medium}`,
+            `- Assets: ${result.summary.assets_found}`,
+            `- Trust boundaries: ${result.summary.trust_boundaries_found}`,
+        ].join("\n"));
+        this.contextValue = "aegisThreatModelRoot";
+        this.iconPath = new vscode.ThemeIcon(result.summary.critical > 0
+            || result.summary.high > 0
+            ? "shield"
+            : "pass-filled");
+    }
+}
+class ThreatSeverityGroupTreeItem extends vscode.TreeItem {
+    severity;
+    threats;
+    constructor(severity, threats) {
+        super(severity.toUpperCase(), vscode.TreeItemCollapsibleState.Expanded);
+        this.severity = severity;
+        this.threats = threats;
+        this.description =
+            `${threats.length} threat(s)`;
+        this.tooltip =
+            `${threats.length} ${severity.toUpperCase()} threat(s)`;
+        this.contextValue =
+            "aegisThreatSeverityGroup";
+        this.iconPath =
+            severityIcon(severity);
+    }
+}
+class ThreatFindingTreeItem extends vscode.TreeItem {
+    threat;
+    constructor(threat) {
+        super(threat.title, vscode.TreeItemCollapsibleState.None);
+        this.threat = threat;
+        this.description =
+            `${formatThreatCategory(threat.category)} · `
+                + `${threat.file}:${threat.line}`;
+        const firstMitigation = threat.mitigations[0]
+            ?? "Review the affected security boundary.";
+        this.tooltip = new vscode.MarkdownString([
+            `**${threat.title}**`,
+            "",
+            `- Severity: ${threat.severity.toUpperCase()}`,
+            `- Category: ${formatThreatCategory(threat.category)}`,
+            `- Confidence: ${Math.round(threat.confidence * 100)}%`,
+            `- File: ${threat.file}`,
+            `- Line: ${threat.line}`,
+            `- Affected asset: ${threat.affected_asset}`,
+            `- Entry point: ${threat.entry_point ?? "Not identified"}`,
+            `- Trust boundary: ${threat.trust_boundary ?? "Not identified"}`,
+            "",
+            threat.description,
+            "",
+            `**First mitigation:** ${firstMitigation}`,
+        ].join("\n"));
+        this.contextValue =
+            "aegisThreatFinding";
+        this.iconPath =
+            severityIcon(threat.severity);
+        this.command = {
+            command: "aegis.openAttackSurfaceNode",
+            title: "Open Threat Location",
+            arguments: [
+                threat.file,
+                threat.line,
             ],
         };
     }
@@ -369,6 +462,28 @@ class DependencyVulnerabilityTreeItem extends vscode.TreeItem {
             arguments: [vulnerability.manifest],
         };
     }
+}
+function groupThreatsBySeverity(threats) {
+    const order = [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info",
+    ];
+    const grouped = new Map();
+    for (const threat of threats) {
+        const existing = grouped.get(threat.severity) ?? [];
+        existing.push(threat);
+        grouped.set(threat.severity, existing);
+    }
+    return order
+        .filter((severity) => grouped.has(severity))
+        .map((severity) => [
+        severity,
+        [...(grouped.get(severity) ?? [])].sort((left, right) => left.file.localeCompare(right.file)
+            || left.line - right.line),
+    ]);
 }
 function groupAttackSurfaceNodes(nodes) {
     const order = [
@@ -1406,6 +1521,8 @@ async function generateWorkspaceThreatModel() {
             void vscode.window.showInformationMessage("Aegis: Threat modeling was cancelled.");
             return;
         }
+        latestThreatModel = result;
+        securityTreeProvider?.refresh();
         await showReusableAegisReport("threat-model", buildThreatModelReport(result));
         const message = `Aegis identified ${result.summary.threats_found} threat(s), `
             + `${result.summary.assets_found} asset(s), and `
