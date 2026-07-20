@@ -9,13 +9,26 @@ from aegis.schemas.analysis import (
     ScannerEvidence,
     SecurityFinding,
 )
+from aegis.security.bandit import BanditScanner
+from aegis.security.orchestrator import SecurityScannerOrchestrator
 from aegis.security.semgrep import SemgrepScanner
 
 
 class SecurityAnalyzer:
     def __init__(self) -> None:
         self.model_client = NvidiaModelClient()
-        self.scanner = SemgrepScanner()
+        self.semgrep_scanner = SemgrepScanner()
+        self.bandit_scanner = BanditScanner()
+
+        self.scanner_orchestrator = (
+            SecurityScannerOrchestrator(
+                [
+                    self.semgrep_scanner,
+                    self.bandit_scanner,
+                ]
+            )
+        )
+
         self.config_scanner = ConfigSecretScanner()
         self.redactor = SecretRedactor()
         self.secret_engine = SecretIntelligenceEngine()
@@ -24,18 +37,31 @@ class SecurityAnalyzer:
         self,
         request: AnalyzeCodeRequest,
     ) -> list[ScannerEvidence]:
-        evidence: list[ScannerEvidence] = []
-
-        if self.scanner.supports_language(
-            request.language
-        ):
-            evidence.extend(
-                await self.scanner.scan(
-                    code=request.code,
-                    language=request.language,
-                    filename=request.filename,
-                )
+        orchestration = (
+            await self.scanner_orchestrator.scan(
+                code=request.code,
+                language=request.language,
+                filename=request.filename,
             )
+        )
+
+        for execution in orchestration.executions:
+            if execution.status == "failed":
+                print(
+                    "Scanner failed without stopping "
+                    f"analysis: {execution.name}: "
+                    f"{execution.error}"
+                )
+            else:
+                print(
+                    f"{execution.name} completed with "
+                    f"{execution.evidence_count} "
+                    "evidence item(s)."
+                )
+
+        evidence = list(
+            orchestration.evidence
+        )
 
         evidence.extend(
             self.config_scanner.scan(
@@ -45,13 +71,19 @@ class SecurityAnalyzer:
             )
         )
 
-        unique_evidence: list[ScannerEvidence] = []
-        seen: set[tuple[str, int, str]] = set()
+        unique_evidence: list[
+            ScannerEvidence
+        ] = []
+
+        seen: set[
+            tuple[str, int, int, str]
+        ] = set()
 
         for item in evidence:
             identity = (
                 item.rule_id,
                 item.line_start,
+                item.line_end,
                 item.code or "",
             )
 
@@ -67,20 +99,27 @@ class SecurityAnalyzer:
         self,
         request: AnalyzeCodeRequest,
     ) -> str:
-        scanners: list[str] = []
-
-        if self.scanner.supports_language(
-            request.language
-        ):
-            scanners.append(self.scanner.name)
+        scanners = [
+            scanner.name
+            for scanner
+            in self.scanner_orchestrator.scanners
+            if scanner.supports_language(
+                request.language
+            )
+        ]
 
         if self.config_scanner.supports(
             filename=request.filename,
             language=request.language,
         ):
-            scanners.append(self.config_scanner.name)
+            scanners.append(
+                self.config_scanner.name
+            )
 
-        return "+".join(scanners) or "not-applicable"
+        return (
+            "+".join(scanners)
+            or "not-applicable"
+        )
 
     async def fast_analyze(
         self,
