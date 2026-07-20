@@ -1255,12 +1255,17 @@ async function applySecureFix() {
         void vscode.window.showWarningMessage("Aegis: The fix was applied, but the file could not be saved.");
         return;
     }
-    const syntaxVerification = await vscode.window.withProgress({
+    const projectVerification = await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
-        title: "Aegis is checking patch syntax",
+        title: "Aegis is verifying syntax, tests, and build",
         cancellable: false,
-    }, async () => verifyPatchedDocumentSyntax(document));
-    if (syntaxVerification.status === "failed") {
+    }, async () => verifyPatchedProject(document));
+    const failedProjectChecks = [
+        projectVerification.syntax,
+        projectVerification.tests,
+        projectVerification.build,
+    ].filter((check) => check.status === "failed");
+    if (failedProjectChecks.length > 0) {
         const patchedSelection = new vscode.Range(document.positionAt(originalSelectionStartOffset), document.positionAt(originalSelectionStartOffset +
             secureSelectionCode.length));
         const rollbackEdit = new vscode.WorkspaceEdit();
@@ -1274,9 +1279,12 @@ async function applySecureFix() {
         const rollbackStatus = rolledBack
             ? "The original code was restored automatically."
             : "Automatic rollback failed. Review the file immediately.";
+        const failedCheckSummary = failedProjectChecks
+            .map((check) => `${check.name}: ${check.details}`)
+            .join(" | ");
         void vscode.window.showErrorMessage([
-            "Aegis Fix Status: FAILED — syntax verification did not pass.",
-            syntaxVerification.details,
+            "Aegis Fix Status: FAILED — project verification did not pass.",
+            failedCheckSummary,
             rollbackStatus,
         ].join(" "), "Open File").then((action) => {
             if (action === "Open File") {
@@ -1311,9 +1319,11 @@ async function applySecureFix() {
         mode: "fast",
     };
     await showAnalysisResult(verificationResult, "fast");
-    const syntaxMessage = syntaxVerification.status === "passed"
-        ? `${syntaxVerification.name}: PASSED`
-        : `${syntaxVerification.name}: SKIPPED`;
+    const verificationMessages = [
+        formatVerificationCheck(projectVerification.syntax),
+        formatVerificationCheck(projectVerification.tests),
+        formatVerificationCheck(projectVerification.build),
+    ];
     const targetResolved = securityDelta.remainingTargetFindings.length === 0;
     const regressionFree = securityDelta.introducedFindings.length === 0;
     if (targetResolved && regressionFree) {
@@ -1322,7 +1332,7 @@ async function applySecureFix() {
             : "No pre-existing findings remain.";
         void vscode.window.showInformationMessage([
             "Aegis Fix Status: VERIFIED.",
-            syntaxMessage + ".",
+            ...verificationMessages,
             "Target vulnerability: RESOLVED.",
             "Regression check: PASSED.",
             existingMessage,
@@ -1366,6 +1376,264 @@ function securityFindingIdentity(finding) {
         finding.severity,
         finding.cwe.slice().sort().join(","),
     ].join("|");
+}
+async function verifyPatchedProject(document) {
+    const syntax = await verifyPatchedDocumentSyntax(document);
+    if (syntax.status === "failed") {
+        return {
+            syntax,
+            tests: {
+                name: "Project tests",
+                status: "skipped",
+                details: "Tests were skipped because syntax verification failed.",
+            },
+            build: {
+                name: "Build/typecheck",
+                status: "skipped",
+                details: "Build was skipped because syntax verification failed.",
+            },
+        };
+    }
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+    if (!workspaceFolder) {
+        return {
+            syntax,
+            tests: {
+                name: "Project tests",
+                status: "skipped",
+                details: "No workspace folder was available for test discovery.",
+            },
+            build: {
+                name: "Build/typecheck",
+                status: "skipped",
+                details: "No workspace folder was available for build discovery.",
+            },
+        };
+    }
+    const workspacePath = workspaceFolder.uri.fsPath;
+    const tests = await discoverAndRunProjectTests(workspacePath, document);
+    if (tests.status === "failed") {
+        return {
+            syntax,
+            tests,
+            build: {
+                name: "Build/typecheck",
+                status: "skipped",
+                details: "Build was skipped because project tests failed.",
+            },
+        };
+    }
+    const build = await discoverAndRunProjectBuild(workspacePath, document);
+    return {
+        syntax,
+        tests,
+        build,
+    };
+}
+function formatVerificationCheck(check) {
+    return (`${check.name}: ${check.status.toUpperCase()}.`);
+}
+async function discoverAndRunProjectTests(workspacePath, document) {
+    const language = normalizeLanguage(document.languageId);
+    if (language === "python") {
+        const pytestFiles = await vscode.workspace.findFiles("**/{pytest.ini,pyproject.toml,setup.cfg,tox.ini}", "**/{.git,.venv,venv,node_modules,dist,build}/**", 20);
+        const testFiles = await vscode.workspace.findFiles("**/{test_*.py,*_test.py,tests/**/*.py}", "**/{.git,.venv,venv,node_modules,dist,build}/**", 20);
+        if (pytestFiles.length > 0 ||
+            testFiles.length > 0) {
+            return runVerificationCommand({
+                name: "Python tests",
+                command: "python3",
+                args: [
+                    "-m",
+                    "pytest",
+                    "-q",
+                ],
+                cwd: workspacePath,
+                timeout: 120_000,
+                missingToolMeansSkipped: true,
+            });
+        }
+        return {
+            name: "Python tests",
+            status: "skipped",
+            details: "No pytest configuration or Python test files were discovered.",
+        };
+    }
+    if (language === "javascript" ||
+        language === "typescript") {
+        const packageJsonPath = await findNearestPackageJson(document.fileName, workspacePath);
+        if (!packageJsonPath) {
+            return {
+                name: "Node tests",
+                status: "skipped",
+                details: "No package.json was found for the patched file.",
+            };
+        }
+        const scripts = await readPackageScripts(packageJsonPath);
+        const testScript = scripts.test;
+        if (!testScript ||
+            isDefaultNpmTestScript(testScript)) {
+            return {
+                name: "Node tests",
+                status: "skipped",
+                details: "No meaningful npm test script was configured.",
+            };
+        }
+        return runVerificationCommand({
+            name: "Node tests",
+            command: "npm",
+            args: [
+                "test",
+                "--",
+                "--runInBand",
+            ],
+            cwd: path.dirname(packageJsonPath),
+            timeout: 180_000,
+            missingToolMeansSkipped: true,
+        });
+    }
+    return {
+        name: "Project tests",
+        status: "skipped",
+        details: `No test runner is configured for ${document.languageId}.`,
+    };
+}
+async function discoverAndRunProjectBuild(workspacePath, document) {
+    const language = normalizeLanguage(document.languageId);
+    if (language === "python") {
+        const pyprojectFiles = await vscode.workspace.findFiles("**/pyproject.toml", "**/{.git,.venv,venv,node_modules,dist,build}/**", 10);
+        if (pyprojectFiles.length === 0) {
+            return {
+                name: "Python build",
+                status: "skipped",
+                details: "No Python project build configuration was discovered.",
+            };
+        }
+        return runVerificationCommand({
+            name: "Python compile-all",
+            command: "python3",
+            args: [
+                "-m",
+                "compileall",
+                "-q",
+                workspacePath,
+            ],
+            cwd: workspacePath,
+            timeout: 120_000,
+        });
+    }
+    if (language === "javascript" ||
+        language === "typescript") {
+        const packageJsonPath = await findNearestPackageJson(document.fileName, workspacePath);
+        if (!packageJsonPath) {
+            return {
+                name: "Build/typecheck",
+                status: "skipped",
+                details: "No package.json was found for build discovery.",
+            };
+        }
+        const scripts = await readPackageScripts(packageJsonPath);
+        const packageDirectory = path.dirname(packageJsonPath);
+        if (scripts.typecheck) {
+            return runVerificationCommand({
+                name: "Typecheck",
+                command: "npm",
+                args: [
+                    "run",
+                    "typecheck",
+                    "--",
+                    "--pretty",
+                    "false",
+                ],
+                cwd: packageDirectory,
+                timeout: 180_000,
+                missingToolMeansSkipped: true,
+            });
+        }
+        if (scripts.build) {
+            return runVerificationCommand({
+                name: "Project build",
+                command: "npm",
+                args: [
+                    "run",
+                    "build",
+                ],
+                cwd: packageDirectory,
+                timeout: 180_000,
+                missingToolMeansSkipped: true,
+            });
+        }
+        if (language === "typescript") {
+            return runVerificationCommand({
+                name: "TypeScript project check",
+                command: "npx",
+                args: [
+                    "--no-install",
+                    "tsc",
+                    "--noEmit",
+                    "--pretty",
+                    "false",
+                ],
+                cwd: packageDirectory,
+                timeout: 180_000,
+                missingToolMeansSkipped: true,
+            });
+        }
+        return {
+            name: "Build/typecheck",
+            status: "skipped",
+            details: "No build or typecheck script was configured.",
+        };
+    }
+    return {
+        name: "Build/typecheck",
+        status: "skipped",
+        details: `No build verifier is configured for ${document.languageId}.`,
+    };
+}
+async function findNearestPackageJson(fileName, workspacePath) {
+    let currentDirectory = path.dirname(fileName);
+    const normalizedWorkspace = path.resolve(workspacePath);
+    while (currentDirectory.startsWith(normalizedWorkspace)) {
+        const candidate = path.join(currentDirectory, "package.json");
+        try {
+            await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
+            return candidate;
+        }
+        catch {
+            // Continue toward the workspace root.
+        }
+        if (currentDirectory === normalizedWorkspace) {
+            break;
+        }
+        const parent = path.dirname(currentDirectory);
+        if (parent === currentDirectory) {
+            break;
+        }
+        currentDirectory = parent;
+    }
+    return undefined;
+}
+async function readPackageScripts(packageJsonPath) {
+    try {
+        const content = await vscode.workspace.fs.readFile(vscode.Uri.file(packageJsonPath));
+        const parsed = JSON.parse(Buffer.from(content).toString("utf-8"));
+        const scripts = {};
+        for (const [name, value,] of Object.entries(parsed.scripts ?? {})) {
+            if (typeof value === "string") {
+                scripts[name] = value;
+            }
+        }
+        return scripts;
+    }
+    catch {
+        return {};
+    }
+}
+function isDefaultNpmTestScript(script) {
+    const normalized = script.toLowerCase();
+    return (normalized.includes("error: no test specified") ||
+        normalized.trim() === "");
 }
 async function verifyPatchedDocumentSyntax(document) {
     const language = normalizeLanguage(document.languageId);
