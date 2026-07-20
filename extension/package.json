@@ -41,6 +41,11 @@
         "category": "Aegis"
       },
       {
+        "command": "aegis.generateThreatModel",
+        "title": "Aegis: Generate Threat Model",
+        "category": "Aegis"
+      },
+      {
         "command": "aegis.scanDependencies",
         "title": "Aegis: Scan Dependencies",
         "category": "Aegis"

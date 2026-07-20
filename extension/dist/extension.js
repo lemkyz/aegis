@@ -85,6 +85,7 @@ function activate(context) {
     const fastScanCurrentFileCommand = vscode.commands.registerCommand("aegis.fastScanCurrentFile", fastScanCurrentFile);
     const scanWorkspaceCommand = vscode.commands.registerCommand("aegis.scanWorkspace", scanEntireWorkspace);
     const mapAttackSurfaceCommand = vscode.commands.registerCommand("aegis.mapAttackSurface", mapWorkspaceAttackSurface);
+    const generateThreatModelCommand = vscode.commands.registerCommand("aegis.generateThreatModel", generateWorkspaceThreatModel);
     const scanDependenciesCommand = vscode.commands.registerCommand("aegis.scanDependencies", scanDependencies);
     const scanUncommittedChangesCommand = vscode.commands.registerCommand("aegis.scanUncommittedChanges", () => scanGitChanges("uncommitted"));
     const scanStagedChangesCommand = vscode.commands.registerCommand("aegis.scanStagedChanges", () => scanGitChanges("staged"));
@@ -100,7 +101,7 @@ function activate(context) {
             vscode.CodeActionKind.QuickFix,
         ],
     });
-    context.subscriptions.push(diagnosticCollection, reportContentProvider, reportProviderRegistration, securityTreeView, openWorkspaceFindingCommand, openDependencyManifestCommand, openAttackSurfaceNodeCommand, refreshSecurityViewCommand, fastScanCommand, fastScanCurrentFileCommand, scanWorkspaceCommand, mapAttackSurfaceCommand, scanDependenciesCommand, scanUncommittedChangesCommand, scanStagedChangesCommand, deepAnalysisCommand, applyFixCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
+    context.subscriptions.push(diagnosticCollection, reportContentProvider, reportProviderRegistration, securityTreeView, openWorkspaceFindingCommand, openDependencyManifestCommand, openAttackSurfaceNodeCommand, refreshSecurityViewCommand, fastScanCommand, fastScanCurrentFileCommand, scanWorkspaceCommand, mapAttackSurfaceCommand, generateThreatModelCommand, scanDependenciesCommand, scanUncommittedChangesCommand, scanStagedChangesCommand, deepAnalysisCommand, applyFixCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
 }
 class AegisSecurityTreeProvider {
     changeEmitter = new vscode.EventEmitter();
@@ -862,6 +863,110 @@ async function requestDependencyScan(backendUrl, packages) {
         clearTimeout(timeout);
     }
 }
+async function requestThreatModelScan(backendUrl, files) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 180_000);
+    try {
+        const response = await fetch(`${backendUrl}/v1/threat-model/scan`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ files }),
+            signal: controller.signal,
+        });
+        const rawBody = await response.text();
+        if (!response.ok) {
+            let detail = rawBody;
+            try {
+                const payload = JSON.parse(rawBody);
+                detail = payload.detail ?? rawBody;
+            }
+            catch {
+                // Preserve the raw backend response.
+            }
+            throw new Error(`Backend returned HTTP ${response.status}: ${detail}`);
+        }
+        return JSON.parse(rawBody);
+    }
+    catch (error) {
+        if (error instanceof Error
+            && error.name === "AbortError") {
+            throw new Error("Threat modeling timed out after three minutes.");
+        }
+        throw error;
+    }
+    finally {
+        clearTimeout(timeout);
+    }
+}
+function buildThreatModelReport(result) {
+    const lines = [
+        "# Aegis Threat Model",
+        "",
+        `- **Modeler:** ${result.modeler}`,
+        `- **Files scanned:** ${result.summary.files_scanned}`,
+        `- **Assets:** ${result.summary.assets_found}`,
+        `- **Trust boundaries:** ${result.summary.trust_boundaries_found}`,
+        `- **Threats:** ${result.summary.threats_found}`,
+        "",
+        "## Severity Summary",
+        "",
+        `- **Critical:** ${result.summary.critical}`,
+        `- **High:** ${result.summary.high}`,
+        `- **Medium:** ${result.summary.medium}`,
+        `- **Low:** ${result.summary.low}`,
+        `- **Info:** ${result.summary.info}`,
+        "",
+        "## Threats",
+        "",
+    ];
+    if (result.threats.length === 0) {
+        lines.push("No deterministic threat was identified.", "");
+    }
+    result.threats.forEach((threat, index) => {
+        lines.push(`### ${index + 1}. ${threat.title}`, "", `- **Severity:** ${threat.severity.toUpperCase()}`, `- **Category:** ${formatThreatCategory(threat.category)}`, `- **Confidence:** ${Math.round(threat.confidence * 100)}%`, `- **Location:** \`${threat.file}:${threat.line}\``, `- **Affected asset:** ${threat.affected_asset}`, `- **Entry point:** ${threat.entry_point ?? "Not identified"}`, `- **Trust boundary:** ${threat.trust_boundary ?? "Not identified"}`, "", threat.description, "", "#### Attack Path", "");
+        for (const step of threat.attack_path) {
+            lines.push(`- ${step}`);
+        }
+        lines.push("", "#### Mitigations", "");
+        for (const mitigation of threat.mitigations) {
+            lines.push(`- ${mitigation}`);
+        }
+        if (threat.evidence.length > 0) {
+            lines.push("", "#### Evidence", "");
+            for (const evidence of threat.evidence) {
+                lines.push(`- \`${evidence.replaceAll("`", "\`")}\``);
+            }
+        }
+        lines.push("", "---", "");
+    });
+    lines.push("## Assets", "");
+    for (const asset of result.assets) {
+        lines.push(`- **${asset.name}** — ${asset.description} `
+            + `(\`${asset.file}:${asset.line}\`)`);
+    }
+    lines.push("", "## Trust Boundaries", "");
+    for (const boundary of result.trust_boundaries) {
+        lines.push(`- **${boundary.label}** — `
+            + `${boundary.boundary_type} `
+            + `(\`${boundary.file}:${boundary.line}\`)`);
+    }
+    lines.push("", "---", "", "> This deterministic threat model is based on statically detected application behavior and may not capture every runtime data flow.");
+    return lines.join("\n");
+}
+function formatThreatCategory(category) {
+    const labels = {
+        command_injection: "Command Injection",
+        sql_injection: "SQL Injection",
+        path_traversal: "Path Traversal",
+        ssrf: "Server-Side Request Forgery",
+        secret_exposure: "Secret Exposure",
+        authentication_bypass: "Authentication Bypass",
+        unsafe_data_flow: "Unsafe Data Flow",
+    };
+    return labels[category];
+}
 function buildAttackSurfaceReport(result) {
     const nodeById = new Map(result.nodes.map((node) => [node.id, node]));
     const lines = [
@@ -1240,6 +1345,85 @@ async function showGitChangesReport(summary, mode) {
         : "# Aegis Uncommitted Changes Security Scan";
     const content = baseReport.replace("# Aegis Workspace Security Scan", heading);
     await showReusableAegisReport("git-changes", content);
+}
+async function generateWorkspaceThreatModel() {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders
+        || workspaceFolders.length === 0) {
+        void vscode.window.showWarningMessage("Aegis: Open a workspace folder before generating a threat model.");
+        return;
+    }
+    const backendUrl = vscode.workspace
+        .getConfiguration("aegis")
+        .get("backendUrl", "http://127.0.0.1:8000")
+        .replace(/\/+$/, "");
+    try {
+        const fileUris = await vscode.workspace.findFiles("**/*.{py,js,jsx,ts,tsx}", "**/{.git,node_modules,.venv,venv,dist,build,out,coverage,__pycache__,.pytest_cache,.mypy_cache}/**", 300);
+        if (fileUris.length === 0) {
+            void vscode.window.showInformationMessage("Aegis: No supported source files were found.");
+            return;
+        }
+        const result = await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Aegis is generating the threat model",
+            cancellable: true,
+        }, async (progress, cancellationToken) => {
+            const files = [];
+            const increment = 50 / fileUris.length;
+            for (const [index, uri] of fileUris.entries()) {
+                if (cancellationToken
+                    .isCancellationRequested) {
+                    return undefined;
+                }
+                const relativePath = vscode.workspace.asRelativePath(uri, false);
+                progress.report({
+                    increment,
+                    message: `${index + 1}/${fileUris.length} · ${relativePath}`,
+                });
+                const document = await vscode.workspace
+                    .openTextDocument(uri);
+                const code = document.getText();
+                if (!code.trim()
+                    || code.length > 200_000) {
+                    continue;
+                }
+                files.push({
+                    filename: relativePath,
+                    language: normalizeLanguage(document.languageId),
+                    code,
+                });
+            }
+            if (files.length === 0) {
+                throw new Error("No eligible source files remained after filtering.");
+            }
+            progress.report({
+                increment: 45,
+                message: `Modeling threats across ${files.length} source file(s)`,
+            });
+            return requestThreatModelScan(backendUrl, files);
+        });
+        if (!result) {
+            void vscode.window.showInformationMessage("Aegis: Threat modeling was cancelled.");
+            return;
+        }
+        await showReusableAegisReport("threat-model", buildThreatModelReport(result));
+        const message = `Aegis identified ${result.summary.threats_found} threat(s), `
+            + `${result.summary.assets_found} asset(s), and `
+            + `${result.summary.trust_boundaries_found} trust boundary/boundaries.`;
+        if (result.summary.critical > 0
+            || result.summary.high > 0) {
+            void vscode.window.showWarningMessage(message, "Keep Report Open");
+        }
+        else {
+            void vscode.window.showInformationMessage(message);
+        }
+    }
+    catch (error) {
+        const message = error instanceof Error
+            ? error.message
+            : String(error);
+        void vscode.window.showErrorMessage(`Aegis Threat Modeling failed: ${message}`);
+    }
 }
 async function mapWorkspaceAttackSurface() {
     const workspaceFolders = vscode.workspace.workspaceFolders;

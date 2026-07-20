@@ -37,8 +37,14 @@ class ThreatModeler:
         trust_boundaries = self._build_trust_boundaries(
             attack_surface.nodes,
         )
+        files_by_name = {
+            file.filename: file
+            for file in files
+        }
+
         threats = self._build_threats(
             attack_surface.nodes,
+            files_by_name,
         )
 
         return ThreatModelScanResponse(
@@ -224,11 +230,21 @@ class ThreatModeler:
     def _build_threats(
         self,
         nodes: list[AttackSurfaceNode],
+        files_by_name: dict[str, AttackSurfaceFile],
     ) -> list[ThreatFinding]:
         threats: list[ThreatFinding] = []
 
         for node in nodes:
-            threat = self._threat_for_node(node)
+            context = self._node_context(
+                node,
+                files_by_name,
+            )
+
+            threat = self._threat_for_node(
+                node,
+                context,
+                nodes,
+            )
 
             if threat is not None:
                 threats.append(threat)
@@ -248,8 +264,15 @@ class ThreatModeler:
     def _threat_for_node(
         self,
         node: AttackSurfaceNode,
+        context: str,
+        nodes: list[AttackSurfaceNode],
     ) -> ThreatFinding | None:
-        if node.kind == "process_execution":
+        if (
+            node.kind == "process_execution"
+            and self._process_execution_is_risky(
+                context
+            )
+        ):
             return self._threat(
                 node=node,
                 title="Untrusted data may reach process execution",
@@ -276,7 +299,12 @@ class ThreatModeler:
                 ],
             )
 
-        if node.kind == "database":
+        if (
+            node.kind == "database"
+            and self._database_operation_is_risky(
+                context
+            )
+        ):
             return self._threat(
                 node=node,
                 title="Untrusted data may alter a database query",
@@ -302,7 +330,14 @@ class ThreatModeler:
                 ],
             )
 
-        if node.kind == "filesystem":
+        if (
+            node.kind == "filesystem"
+            and self._filesystem_operation_is_risky(
+                node,
+                context,
+                nodes,
+            )
+        ):
             return self._threat(
                 node=node,
                 title="Untrusted paths may escape the intended directory",
@@ -328,7 +363,14 @@ class ThreatModeler:
                 ],
             )
 
-        if node.kind == "outbound_request":
+        if (
+            node.kind == "outbound_request"
+            and self._outbound_request_is_risky(
+                node,
+                context,
+                nodes,
+            )
+        ):
             return self._threat(
                 node=node,
                 title="User-controlled destinations may enable SSRF",
@@ -354,7 +396,12 @@ class ThreatModeler:
                 ],
             )
 
-        if node.kind == "secret_access":
+        if (
+            node.kind == "secret_access"
+            and self._secret_access_is_risky(
+                context
+            )
+        ):
             return self._threat(
                 node=node,
                 title="Sensitive configuration may be exposed",
@@ -436,6 +483,269 @@ class ThreatModeler:
             )
 
         return None
+
+    @staticmethod
+    def _node_context(
+        node: AttackSurfaceNode,
+        files_by_name: dict[str, AttackSurfaceFile],
+        radius: int = 8,
+    ) -> str:
+        file = files_by_name.get(node.file)
+
+        if file is None:
+            return node.evidence
+
+        lines = file.code.splitlines()
+
+        start = max(
+            0,
+            node.line_start - radius - 1,
+        )
+        end = min(
+            len(lines),
+            node.line_end + radius,
+        )
+
+        return "\n".join(
+            lines[start:end]
+        )
+
+    @staticmethod
+    def _process_execution_is_risky(
+        context: str,
+    ) -> bool:
+        lowered = context.lower()
+        compact = "".join(lowered.split())
+
+        explicitly_dangerous = (
+            "os.system(",
+            "os.popen(",
+            "child_process.exec(",
+            "child_process.execsync(",
+            "shell=true",
+            "shell: true",
+        )
+
+        if any(
+            marker in lowered
+            for marker in explicitly_dangerous
+        ):
+            return True
+
+        if (
+            "subprocess.run" in lowered
+            or "subprocess.popen" in lowered
+            or "subprocess.call" in lowered
+        ):
+            has_argument_list = (
+                "subprocess.run([" in compact
+                or "subprocess.popen([" in compact
+                or "subprocess.call([" in compact
+            )
+
+            return not has_argument_list
+
+        if (
+            "spawn(" in lowered
+            or "spawnsync(" in lowered
+        ):
+            return "[" not in context
+
+        return True
+
+    @staticmethod
+    def _database_operation_is_risky(
+        context: str,
+    ) -> bool:
+        lowered = context.lower()
+
+        sql_keywords = (
+            "select ",
+            "insert ",
+            "update ",
+            "delete ",
+            " where ",
+            " from ",
+        )
+
+        if not any(
+            keyword in lowered
+            for keyword in sql_keywords
+        ):
+            return False
+
+        interpolation_markers = (
+            "${",
+            ".format(",
+            "f\"",
+            "f'",
+            "%s\" %",
+            "%s' %",
+            " + ",
+        )
+
+        if any(
+            marker in lowered
+            for marker in interpolation_markers
+        ):
+            return True
+
+        return bool(
+            "execute(query)" in lowered
+            and (
+                "query = f" in lowered
+                or "query=f" in lowered
+            )
+        )
+
+    @classmethod
+    def _filesystem_operation_is_risky(
+        cls,
+        node: AttackSurfaceNode,
+        context: str,
+        nodes: list[AttackSurfaceNode],
+    ) -> bool:
+        lowered = context.lower()
+
+        safety_markers = (
+            "realpath",
+            ".resolve(",
+            "startswith(",
+            "relative_to(",
+            "path.basename(",
+            "os.path.basename(",
+            "allowed_root",
+            "allowed_directory",
+        )
+
+        if any(
+            marker in lowered
+            for marker in safety_markers
+        ):
+            return False
+
+        input_markers = (
+            "req.query",
+            "req.params",
+            "req.body",
+            "request.args",
+            "request.form",
+            "request.query_params",
+            "filename",
+            "user_path",
+            "input_path",
+        )
+
+        return (
+            any(
+                marker in lowered
+                for marker in input_markers
+            )
+            or cls._has_nearby_user_input(
+                node,
+                nodes,
+            )
+        )
+
+    @classmethod
+    def _outbound_request_is_risky(
+        cls,
+        node: AttackSurfaceNode,
+        context: str,
+        nodes: list[AttackSurfaceNode],
+    ) -> bool:
+        lowered = context.lower()
+
+        safety_markers = (
+            "allowed_hosts",
+            "allowed_host",
+            "allowlist",
+            "hostname not in",
+            "protocol not in",
+            "private_address",
+            "is_private",
+            "is_loopback",
+            "ipaddress.",
+        )
+
+        if any(
+            marker in lowered
+            for marker in safety_markers
+        ):
+            return False
+
+        input_markers = (
+            "req.query",
+            "req.params",
+            "req.body",
+            "request.args",
+            "request.form",
+            "request.query_params",
+        )
+
+        return (
+            any(
+                marker in lowered
+                for marker in input_markers
+            )
+            or cls._has_nearby_user_input(
+                node,
+                nodes,
+            )
+        )
+
+    @staticmethod
+    def _secret_access_is_risky(
+        context: str,
+    ) -> bool:
+        lowered = context.lower()
+
+        exposure_markers = (
+            "console.log(",
+            "print(",
+            "logger.info(",
+            "logger.debug(",
+            "res.send(",
+            "res.json(",
+            "jsonresponse(",
+        )
+
+        secret_markers = (
+            "secret",
+            "password",
+            "token",
+            "api_key",
+            "apikey",
+            "private_key",
+            "database_url",
+        )
+
+        return (
+            any(
+                marker in lowered
+                for marker in exposure_markers
+            )
+            and any(
+                marker in lowered
+                for marker in secret_markers
+            )
+        )
+
+    @staticmethod
+    def _has_nearby_user_input(
+        node: AttackSurfaceNode,
+        nodes: list[AttackSurfaceNode],
+        distance: int = 12,
+    ) -> bool:
+        return any(
+            candidate.kind == "user_input"
+            and candidate.file == node.file
+            and abs(
+                candidate.line_start
+                - node.line_start
+            ) <= distance
+            for candidate in nodes
+        )
 
     def _threat(
         self,

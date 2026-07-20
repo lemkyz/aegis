@@ -98,3 +98,78 @@ def add(left: int, right: int) -> int:
     assert result.assets == []
     assert result.trust_boundaries == []
     assert result.summary.threats_found == 0
+
+
+def test_safe_sensitive_operations_are_not_threats() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="safe.py",
+            language="python",
+            code="""
+import os
+import subprocess
+import requests
+
+
+def run_job(job_name: str):
+    return subprocess.run(
+        ["worker", job_name],
+        check=True,
+    )
+
+
+def load_user(db, user_id: str):
+    query = "SELECT * FROM users WHERE id = ?"
+    return db.execute(
+        query,
+        (user_id,),
+    ).fetchone()
+
+
+def load_secret():
+    return os.environ["APP_API_KEY"]
+
+
+def fetch_status():
+    return requests.get(
+        "https://status.example.com/health"
+    )
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    categories = {
+        threat.category
+        for threat in result.threats
+    }
+
+    assert "command_injection" not in categories
+    assert "sql_injection" not in categories
+    assert "secret_exposure" not in categories
+    assert "ssrf" not in categories
+
+
+def test_secret_logging_is_reported() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="leak.py",
+            language="python",
+            code="""
+import os
+
+
+def debug_secret():
+    api_key = os.environ["APP_API_KEY"]
+    print(api_key)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    assert any(
+        threat.category == "secret_exposure"
+        for threat in result.threats
+    )
