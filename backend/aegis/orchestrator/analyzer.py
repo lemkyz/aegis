@@ -1,4 +1,5 @@
 from aegis.models.nvidia import NvidiaModelClient
+from aegis.security.config_secrets import ConfigSecretScanner
 from aegis.security.redaction import SecretRedactor
 from aegis.security.secrets import SecretIntelligenceEngine
 from aegis.schemas.analysis import (
@@ -14,19 +15,82 @@ class SecurityAnalyzer:
     def __init__(self) -> None:
         self.model_client = NvidiaModelClient()
         self.scanner = SemgrepScanner()
+        self.config_scanner = ConfigSecretScanner()
         self.redactor = SecretRedactor()
         self.secret_engine = SecretIntelligenceEngine()
+
+    async def _collect_scanner_evidence(
+        self,
+        request: AnalyzeCodeRequest,
+    ) -> list[ScannerEvidence]:
+        evidence: list[ScannerEvidence] = []
+
+        if self.scanner.supports_language(
+            request.language
+        ):
+            evidence.extend(
+                await self.scanner.scan(
+                    code=request.code,
+                    language=request.language,
+                    filename=request.filename,
+                )
+            )
+
+        evidence.extend(
+            self.config_scanner.scan(
+                code=request.code,
+                language=request.language,
+                filename=request.filename,
+            )
+        )
+
+        unique_evidence: list[ScannerEvidence] = []
+        seen: set[tuple[str, int, str]] = set()
+
+        for item in evidence:
+            identity = (
+                item.rule_id,
+                item.line_start,
+                item.code or "",
+            )
+
+            if identity in seen:
+                continue
+
+            seen.add(identity)
+            unique_evidence.append(item)
+
+        return unique_evidence
+
+    def _scanner_name(
+        self,
+        request: AnalyzeCodeRequest,
+    ) -> str:
+        scanners: list[str] = []
+
+        if self.scanner.supports_language(
+            request.language
+        ):
+            scanners.append(self.scanner.name)
+
+        if self.config_scanner.supports(
+            filename=request.filename,
+            language=request.language,
+        ):
+            scanners.append(self.config_scanner.name)
+
+        return "+".join(scanners) or "not-applicable"
 
     async def fast_analyze(
         self,
         request: AnalyzeCodeRequest,
     ) -> AnalyzeCodeResponse:
-        print("1. Fast Scan: Semgrep starting...")
+        print("1. Fast Scan: security scanners starting...")
 
-        scanner_evidence = await self.scanner.scan(
-            code=request.code,
-            language=request.language,
-            filename=request.filename,
+        scanner_evidence = (
+            await self._collect_scanner_evidence(
+                request
+            )
         )
 
         scanner_evidence = (
@@ -61,7 +125,7 @@ class SecurityAnalyzer:
             filename=request.filename,
             language=request.language,
             model="not-used",
-            scanner=self.scanner.name,
+            scanner=self._scanner_name(request),
             analysis_status="skipped",
             result_source="scanner",
             findings=findings,
@@ -71,12 +135,12 @@ class SecurityAnalyzer:
         self,
         request: AnalyzeCodeRequest,
     ) -> AnalyzeCodeResponse:
-        print("1. Deep Analysis: Semgrep starting...")
+        print("1. Deep Analysis: security scanners starting...")
 
-        scanner_evidence = await self.scanner.scan(
-            code=request.code,
-            language=request.language,
-            filename=request.filename,
+        scanner_evidence = (
+            await self._collect_scanner_evidence(
+                request
+            )
         )
 
         scanner_evidence = (
@@ -86,7 +150,7 @@ class SecurityAnalyzer:
         )
 
         print(
-            f"2. Semgrep completed. "
+            f"2. Security scanners completed. "
             f"{len(scanner_evidence)} evidence item(s) found."
         )
 
@@ -100,7 +164,7 @@ class SecurityAnalyzer:
                 filename=request.filename,
                 language=request.language,
                 model="not-used",
-                scanner=self.scanner.name,
+                scanner=self._scanner_name(request),
                 analysis_status="skipped",
                 result_source="scanner",
                 findings=[],
@@ -173,7 +237,7 @@ class SecurityAnalyzer:
                 filename=request.filename,
                 language=request.language,
                 model=f"{self.model_client.model} (fallback)",
-                scanner=self.scanner.name,
+                scanner=self._scanner_name(request),
                 analysis_status="fallback",
                 result_source="scanner_fallback",
                 findings=findings,
@@ -188,7 +252,7 @@ class SecurityAnalyzer:
             filename=request.filename,
             language=request.language,
             model=self.model_client.model,
-            scanner=self.scanner.name,
+            scanner=self._scanner_name(request),
             analysis_status="completed",
             result_source="ai",
             findings=findings,

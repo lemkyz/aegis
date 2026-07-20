@@ -17,6 +17,26 @@ class SemgrepScanner:
             / "rules"
         )
 
+    def supports_language(
+        self,
+        language: str,
+    ) -> bool:
+        normalized = language.lower().strip()
+
+        aliases = {
+            "javascriptreact": "javascript",
+            "typescriptreact": "typescript",
+        }
+
+        rule_language = aliases.get(
+            normalized,
+            normalized,
+        )
+
+        return (
+            self.rules_root / rule_language
+        ).exists()
+
     async def scan(
         self,
         *,
