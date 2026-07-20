@@ -1282,6 +1282,12 @@ async function applySecureFix() {
         const failedCheckSummary = failedProjectChecks
             .map((check) => `${check.name}: ${check.details}`)
             .join(" | ");
+        await showFixVerificationReport({
+            fileName: document.fileName,
+            status: "FAILED",
+            projectVerification,
+            rollbackStatus,
+        });
         void vscode.window.showErrorMessage([
             "Aegis Fix Status: FAILED — project verification did not pass.",
             failedCheckSummary,
@@ -1326,6 +1332,16 @@ async function applySecureFix() {
     ];
     const targetResolved = securityDelta.remainingTargetFindings.length === 0;
     const regressionFree = securityDelta.introducedFindings.length === 0;
+    await showFixVerificationReport({
+        fileName: document.fileName,
+        status: targetResolved && regressionFree
+            ? "VERIFIED"
+            : "FAILED",
+        projectVerification,
+        targetResolved,
+        regressionFree,
+        securityDelta,
+    });
     if (targetResolved && regressionFree) {
         const existingMessage = securityDelta.unchangedFindings.length > 0
             ? `${securityDelta.unchangedFindings.length} unrelated pre-existing finding(s) remain.`
@@ -1352,6 +1368,125 @@ async function applySecureFix() {
         }
     });
     editor.revealRange(analyzedState.selection, vscode.TextEditorRevealType.InCenter);
+}
+async function showFixVerificationReport(input) {
+    await showReusableAegisReport("fix-verification", buildFixVerificationReport(input));
+}
+function buildFixVerificationReport(input) {
+    const checks = [
+        input.projectVerification.syntax,
+        input.projectVerification.tests,
+        input.projectVerification.build,
+    ];
+    const checkSections = checks
+        .map(buildVerificationCheckSection)
+        .join("\n\n");
+    const targetStatus = input.targetResolved === undefined
+        ? "NOT RUN"
+        : input.targetResolved
+            ? "PASSED"
+            : "FAILED";
+    const regressionStatus = input.regressionFree === undefined
+        ? "NOT RUN"
+        : input.regressionFree
+            ? "PASSED"
+            : "FAILED";
+    const remainingTargetFindings = input.securityDelta?.remainingTargetFindings ?? [];
+    const introducedFindings = input.securityDelta?.introducedFindings ?? [];
+    const unchangedFindings = input.securityDelta?.unchangedFindings ?? [];
+    const securitySections = [
+        buildFindingListSection("Remaining Target Findings", remainingTargetFindings),
+        buildFindingListSection("Newly Introduced Findings", introducedFindings),
+        buildFindingListSection("Unchanged Pre-existing Findings", unchangedFindings),
+    ].join("\n\n");
+    const rollbackSection = input.rollbackStatus
+        ? [
+            "## Rollback",
+            "",
+            input.rollbackStatus,
+        ].join("\n")
+        : [
+            "## Rollback",
+            "",
+            "Not required.",
+        ].join("\n");
+    return [
+        "# Aegis Fix Verification",
+        "",
+        `- **File:** ${path.basename(input.fileName)}`,
+        `- **Final Status:** ${input.status}`,
+        `- **Target Vulnerability:** ${targetStatus}`,
+        `- **Regression Check:** ${regressionStatus}`,
+        `- **Generated:** ${new Date().toISOString()}`,
+        "",
+        "> VERIFIED means the configured syntax, project, and security checks completed without a detected failure. Skipped checks are shown explicitly.",
+        "",
+        "## Project Verification",
+        "",
+        checkSections,
+        "",
+        "## Security Verification",
+        "",
+        `- **Target findings remaining:** ${remainingTargetFindings.length}`,
+        `- **New findings introduced:** ${introducedFindings.length}`,
+        `- **Unchanged findings:** ${unchangedFindings.length}`,
+        "",
+        securitySections,
+        "",
+        rollbackSection,
+    ].join("\n");
+}
+function buildVerificationCheckSection(check) {
+    const lines = [
+        `### ${check.name}`,
+        "",
+        `- **Status:** ${check.status.toUpperCase()}`,
+    ];
+    if (check.command) {
+        lines.push(`- **Command:** \`${escapeMarkdownInlineCode(check.command)}\``);
+    }
+    lines.push("", "```text", sanitizeVerificationDetails(check.details), "```");
+    return lines.join("\n");
+}
+function buildFindingListSection(heading, findings) {
+    if (findings.length === 0) {
+        return [
+            `### ${heading}`,
+            "",
+            "None.",
+        ].join("\n");
+    }
+    const items = findings.map((finding, index) => {
+        const ruleIds = finding.scanner_evidence
+            .map((evidence) => evidence.rule_id)
+            .filter((ruleId, ruleIndex, allRuleIds) => allRuleIds.indexOf(ruleId) === ruleIndex);
+        const cwes = finding.cwe.length > 0
+            ? finding.cwe.join(", ")
+            : "Not specified";
+        return [
+            `${index + 1}. **${finding.title}**`,
+            `   - Severity: ${finding.severity.toUpperCase()}`,
+            `   - CWE: ${cwes}`,
+            `   - Rules: ${ruleIds.join(", ") || "Not specified"}`,
+        ].join("\n");
+    });
+    return [
+        `### ${heading}`,
+        "",
+        ...items,
+    ].join("\n");
+}
+function escapeMarkdownInlineCode(value) {
+    return value.replace(/`/g, "\\`");
+}
+function sanitizeVerificationDetails(details) {
+    const trimmed = details.trim();
+    if (!trimmed) {
+        return "No additional details were provided.";
+    }
+    return trimmed
+        .replace(/```/g, "~~~")
+        .slice(0, 12_000);
 }
 function compareSecurityVerificationResults(analyzedResponse, baselineResponse, verificationResponse) {
     const targetRuleIds = Array.from(new Set(analyzedResponse.findings.flatMap((finding) => finding.scanner_evidence.map((evidence) => evidence.rule_id))));
