@@ -127,7 +127,9 @@ class SecretIntelligenceEngine:
         self,
         evidence: ScannerEvidence,
     ) -> ScannerEvidence:
-        if ".secrets." not in evidence.rule_id:
+        if not self._is_secret_rule(
+            evidence.rule_id
+        ):
             return evidence
 
         classification = self.classify(
@@ -140,6 +142,17 @@ class SecretIntelligenceEngine:
             update={
                 "secret": classification,
             },
+        )
+
+    @staticmethod
+    def _is_secret_rule(
+        rule_id: str,
+    ) -> bool:
+        return (
+            ".secrets." in rule_id
+            or rule_id.startswith(
+                "aegis.config."
+            )
         )
 
     def classify(
@@ -216,7 +229,10 @@ class SecretIntelligenceEngine:
         if "private-key" in rule_id:
             return "PRIVATE_KEY_MATERIAL"
 
-        if "database-url" in rule_id:
+        if (
+            "database-url" in rule_id
+            or "database-credential" in rule_id
+        ):
             match = self._database_url_pattern.search(code)
 
             if match:
@@ -256,8 +272,16 @@ class SecretIntelligenceEngine:
         if "private-key" in rule_id:
             return "Cryptography", "private_key", 0.99
 
-        if "database-url" in rule_id:
+        if (
+            "database-url" in rule_id
+            or "database-credential" in rule_id
+        ):
             return "Database", "connection_password", 0.94
+
+        if "config.hardcoded-secret" in rule_id:
+            return self._classify_config_assignment(
+                secret_value=secret_value,
+            )
 
         if "jwt-secret" in rule_id:
             return "JWT", "signing_secret", 0.88
@@ -269,6 +293,22 @@ class SecretIntelligenceEngine:
             return "Generic", "api_key", 0.78
 
         return "Generic", "unknown", 0.60
+
+    def _classify_config_assignment(
+        self,
+        *,
+        secret_value: str,
+    ) -> tuple[str, str, float]:
+        for provider, secret_type, pattern in (
+            self._provider_patterns
+        ):
+            if (
+                secret_value
+                and pattern.search(secret_value)
+            ):
+                return provider, secret_type, 0.98
+
+        return "Generic", "configuration_secret", 0.82
 
     def _is_likely_placeholder(
         self,
