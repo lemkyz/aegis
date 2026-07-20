@@ -13,7 +13,8 @@ type AegisReportKind =
   | "workspace"
   | "git-changes"
   | "dependencies"
-  | "fix-verification";
+  | "fix-verification"
+  | "attack-surface";
 
 class AegisReportContentProvider
   implements vscode.TextDocumentContentProvider {
@@ -217,6 +218,74 @@ interface DependencyScanResponse {
   vulnerabilities: DependencyVulnerability[];
 }
 
+type AttackSurfaceNodeKind =
+  | "http_route"
+  | "authentication"
+  | "user_input"
+  | "database"
+  | "filesystem"
+  | "outbound_request"
+  | "process_execution"
+  | "secret_access";
+
+type AttackSurfaceRisk =
+  | "info"
+  | "low"
+  | "medium"
+  | "high"
+  | "critical";
+
+interface AttackSurfaceFileInput {
+  filename: string;
+  language: string;
+  code: string;
+}
+
+interface AttackSurfaceNode {
+  id: string;
+  kind: AttackSurfaceNodeKind;
+  label: string;
+  file: string;
+  line_start: number;
+  line_end: number;
+  symbol: string | null;
+  framework: string | null;
+  method: string | null;
+  path: string | null;
+  authenticated: boolean | null;
+  risk: AttackSurfaceRisk;
+  evidence: string;
+  metadata: Record<string, string>;
+}
+
+interface AttackSurfaceEdge {
+  source: string;
+  target: string;
+  relationship: string;
+  confidence: number;
+}
+
+interface AttackSurfaceSummary {
+  files_scanned: number;
+  nodes_found: number;
+  edges_found: number;
+  routes: number;
+  authenticated_routes: number;
+  unauthenticated_routes: number;
+  databases: number;
+  filesystems: number;
+  outbound_requests: number;
+  process_executions: number;
+  secret_accesses: number;
+}
+
+interface AttackSurfaceScanResponse {
+  mapper: string;
+  nodes: AttackSurfaceNode[];
+  edges: AttackSurfaceEdge[];
+  summary: AttackSurfaceSummary;
+}
+
 let lastAnalysis: LastAnalysis | undefined;
 let latestWorkspaceScan: WorkspaceScanSummary | undefined;
 let reportContentProvider:
@@ -278,6 +347,12 @@ export function activate(context: vscode.ExtensionContext): void {
     "aegis.scanWorkspace",
     scanEntireWorkspace,
   );
+
+  const mapAttackSurfaceCommand =
+    vscode.commands.registerCommand(
+      "aegis.mapAttackSurface",
+      mapWorkspaceAttackSurface,
+    );
 
   const scanDependenciesCommand =
     vscode.commands.registerCommand(
@@ -344,6 +419,7 @@ export function activate(context: vscode.ExtensionContext): void {
     fastScanCommand,
     fastScanCurrentFileCommand,
     scanWorkspaceCommand,
+    mapAttackSurfaceCommand,
     scanDependenciesCommand,
     scanUncommittedChangesCommand,
     scanStagedChangesCommand,
@@ -1449,6 +1525,219 @@ async function requestDependencyScan(
   }
 }
 
+
+function buildAttackSurfaceReport(
+  result: AttackSurfaceScanResponse,
+): string {
+  const nodeById = new Map(
+    result.nodes.map(
+      (node) => [node.id, node],
+    ),
+  );
+
+  const lines: string[] = [
+    "# Aegis Attack Surface Map",
+    "",
+    `- **Mapper:** ${result.mapper}`,
+    `- **Files scanned:** ${result.summary.files_scanned}`,
+    `- **Surface nodes:** ${result.summary.nodes_found}`,
+    `- **Relationships:** ${result.summary.edges_found}`,
+    "",
+    "## Exposure Summary",
+    "",
+    `- **HTTP routes:** ${result.summary.routes}`,
+    `- **Authenticated routes:** ${result.summary.authenticated_routes}`,
+    `- **Unauthenticated routes:** ${result.summary.unauthenticated_routes}`,
+    `- **Database operations:** ${result.summary.databases}`,
+    `- **Filesystem operations:** ${result.summary.filesystems}`,
+    `- **Outbound requests:** ${result.summary.outbound_requests}`,
+    `- **Process executions:** ${result.summary.process_executions}`,
+    `- **Secret/config accesses:** ${result.summary.secret_accesses}`,
+    "",
+    "## Routes",
+    "",
+  ];
+
+  const routes = result.nodes.filter(
+    (node) => node.kind === "http_route",
+  );
+
+  if (routes.length === 0) {
+    lines.push(
+      "No supported HTTP route declaration was detected.",
+      "",
+    );
+  }
+
+  routes.forEach((route, index) => {
+    const authentication =
+      route.authenticated === true
+        ? "YES"
+        : route.authenticated === false
+          ? "NO"
+          : "UNKNOWN";
+
+    lines.push(
+      `### ${index + 1}. ${route.label}`,
+      "",
+      `- **Risk:** ${route.risk.toUpperCase()}`,
+      `- **Authentication detected:** ${authentication}`,
+      `- **Framework:** ${route.framework ?? "Unknown"}`,
+      `- **Location:** \`${route.file}:${route.line_start}\``,
+      "",
+    );
+
+    const reachable = result.edges.filter(
+      (edge) => edge.source === route.id,
+    );
+
+    if (reachable.length === 0) {
+      return;
+    }
+
+    lines.push("#### Reachable operations", "");
+
+    for (const edge of reachable) {
+      const target = nodeById.get(edge.target);
+
+      if (!target) {
+        continue;
+      }
+
+      lines.push(
+        `- **${formatAttackSurfaceKind(target.kind)}:** `
+        + `\`${target.file}:${target.line_start}\` — `
+        + `${target.label} `
+        + `(${Math.round(edge.confidence * 100)}% confidence)`,
+      );
+    }
+
+    lines.push("");
+  });
+
+  const operations = result.nodes.filter(
+    (node) => node.kind !== "http_route",
+  );
+
+  lines.push(
+    "## Security-Sensitive Operations",
+    "",
+  );
+
+  if (operations.length === 0) {
+    lines.push(
+      "No supported security-sensitive operation was detected.",
+      "",
+    );
+  }
+
+  operations.forEach((node, index) => {
+    const safeEvidence =
+      node.evidence.replaceAll("`", "\\`");
+
+    lines.push(
+      `### ${index + 1}. ${formatAttackSurfaceKind(node.kind)}`,
+      "",
+      `- **Label:** ${node.label}`,
+      `- **Risk:** ${node.risk.toUpperCase()}`,
+      `- **Location:** \`${node.file}:${node.line_start}\``,
+      `- **Framework:** ${node.framework ?? "Unknown"}`,
+      `- **Evidence:** \`${safeEvidence}\``,
+      "",
+    );
+  });
+
+  lines.push(
+    "---",
+    "",
+    "> This deterministic static map may not identify every application entry point or data flow.",
+  );
+
+  return lines.join("\n");
+}
+
+function formatAttackSurfaceKind(
+  kind: AttackSurfaceNodeKind,
+): string {
+  const labels:
+    Record<AttackSurfaceNodeKind, string> = {
+      http_route: "HTTP Route",
+      authentication: "Authentication Boundary",
+      user_input: "User Input",
+      database: "Database",
+      filesystem: "Filesystem",
+      outbound_request: "Outbound Request",
+      process_execution: "Process Execution",
+      secret_access: "Secret Access",
+    };
+
+  return labels[kind];
+}
+
+async function requestAttackSurfaceScan(
+  backendUrl: string,
+  files: AttackSurfaceFileInput[],
+): Promise<AttackSurfaceScanResponse> {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    180_000,
+  );
+
+  try {
+    const response = await fetch(
+      `${backendUrl}/v1/attack-surface/scan`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ files }),
+        signal: controller.signal,
+      },
+    );
+
+    const rawBody = await response.text();
+
+    if (!response.ok) {
+      let detail = rawBody;
+
+      try {
+        const payload =
+          JSON.parse(rawBody) as {
+            detail?: string;
+          };
+
+        detail = payload.detail ?? rawBody;
+      } catch {
+        // Preserve the raw backend response.
+      }
+
+      throw new Error(
+        `Backend returned HTTP ${response.status}: ${detail}`,
+      );
+    }
+
+    return JSON.parse(
+      rawBody,
+    ) as AttackSurfaceScanResponse;
+  } catch (error: unknown) {
+    if (
+      error instanceof Error
+      && error.name === "AbortError"
+    ) {
+      throw new Error(
+        "Attack Surface mapping timed out after three minutes.",
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function aegisReportUri(
   kind: AegisReportKind,
 ): vscode.Uri {
@@ -1967,6 +2256,159 @@ async function showGitChangesReport(
     "git-changes",
     content,
   );
+}
+
+async function mapWorkspaceAttackSurface():
+  Promise<void> {
+  const workspaceFolders =
+    vscode.workspace.workspaceFolders;
+
+  if (
+    !workspaceFolders
+    || workspaceFolders.length === 0
+  ) {
+    void vscode.window.showWarningMessage(
+      "Aegis: Open a workspace folder before mapping the attack surface.",
+    );
+    return;
+  }
+
+  const backendUrl =
+    vscode.workspace
+      .getConfiguration("aegis")
+      .get<string>(
+        "backendUrl",
+        "http://127.0.0.1:8000",
+      )
+      .replace(/\/+$/, "");
+
+  try {
+    const fileUris =
+      await vscode.workspace.findFiles(
+        "**/*.{py,js,jsx,ts,tsx}",
+        "**/{.git,node_modules,.venv,venv,dist,build,out,coverage,__pycache__,.pytest_cache,.mypy_cache}/**",
+        300,
+      );
+
+    if (fileUris.length === 0) {
+      void vscode.window.showInformationMessage(
+        "Aegis: No supported source files were found.",
+      );
+      return;
+    }
+
+    const result =
+      await vscode.window.withProgress(
+        {
+          location:
+            vscode.ProgressLocation.Notification,
+          title:
+            "Aegis is mapping the attack surface",
+          cancellable: true,
+        },
+        async (
+          progress,
+          cancellationToken,
+        ): Promise<
+          AttackSurfaceScanResponse | undefined
+        > => {
+          const files:
+            AttackSurfaceFileInput[] = [];
+
+          const increment =
+            50 / fileUris.length;
+
+          for (
+            const [index, uri]
+            of fileUris.entries()
+          ) {
+            if (
+              cancellationToken
+                .isCancellationRequested
+            ) {
+              return undefined;
+            }
+
+            const relativePath =
+              vscode.workspace.asRelativePath(
+                uri,
+                false,
+              );
+
+            progress.report({
+              increment,
+              message:
+                `${index + 1}/${fileUris.length} · ${relativePath}`,
+            });
+
+            const document =
+              await vscode.workspace
+                .openTextDocument(uri);
+
+            const code = document.getText();
+
+            if (
+              !code.trim()
+              || code.length > 200_000
+            ) {
+              continue;
+            }
+
+            files.push({
+              filename: relativePath,
+              language: normalizeLanguage(
+                document.languageId,
+              ),
+              code,
+            });
+          }
+
+          if (files.length === 0) {
+            throw new Error(
+              "No eligible source files remained after filtering.",
+            );
+          }
+
+          progress.report({
+            increment: 45,
+            message:
+              `Analyzing ${files.length} source file(s)`,
+          });
+
+          return requestAttackSurfaceScan(
+            backendUrl,
+            files,
+          );
+        },
+      );
+
+    if (!result) {
+      void vscode.window.showInformationMessage(
+        "Aegis: Attack Surface mapping was cancelled.",
+      );
+      return;
+    }
+
+    await showReusableAegisReport(
+      "attack-surface",
+      buildAttackSurfaceReport(result),
+    );
+
+    void vscode.window.showInformationMessage(
+      `Aegis mapped ${result.summary.routes} route(s), `
+      + `${result.summary.nodes_found} node(s), and `
+      + `${result.summary.edges_found} relationship(s).`,
+    );
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+    void vscode.window.showErrorMessage(
+      `Aegis Attack Surface mapping failed: ${message}`,
+    );
+  }
 }
 
 async function scanEntireWorkspace(): Promise<void> {

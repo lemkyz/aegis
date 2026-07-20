@@ -36,6 +36,11 @@
         "category": "Aegis"
       },
       {
+        "command": "aegis.mapAttackSurface",
+        "title": "Aegis: Map Attack Surface",
+        "category": "Aegis"
+      },
+      {
         "command": "aegis.scanDependencies",
         "title": "Aegis: Scan Dependencies",
         "category": "Aegis"
