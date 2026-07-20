@@ -1,0 +1,643 @@
+import hashlib
+import re
+from dataclasses import dataclass
+
+from aegis.schemas.attack_surface import (
+    AttackSurfaceEdge,
+    AttackSurfaceFile,
+    AttackSurfaceNode,
+    AttackSurfaceScanResponse,
+    AttackSurfaceSummary,
+)
+
+
+@dataclass(frozen=True)
+class _Pattern:
+    kind: str
+    expression: re.Pattern[str]
+    label: str
+    risk: str
+    framework: str | None = None
+
+
+class AttackSurfaceMapper:
+    name = "aegis-static-attack-surface"
+
+    _python_route_pattern = re.compile(
+        r"""
+        @(?P<app>[A-Za-z_][A-Za-z0-9_]*)
+        \.
+        (?P<method>get|post|put|patch|delete|options|head)
+        \(
+        \s*
+        (?P<quote>["'])
+        (?P<path>[^"']+)
+        (?P=quote)
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+    _flask_route_pattern = re.compile(
+        r"""
+        @(?P<app>[A-Za-z_][A-Za-z0-9_]*)
+        \.route
+        \(
+        \s*
+        (?P<quote>["'])
+        (?P<path>[^"']+)
+        (?P=quote)
+        (?P<options>[^)]*)
+        \)
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+    _express_route_pattern = re.compile(
+        r"""
+        (?P<app>[A-Za-z_$][A-Za-z0-9_$]*)
+        \.
+        (?P<method>get|post|put|patch|delete|options|head|use)
+        \(
+        \s*
+        (?P<quote>["'`])
+        (?P<path>[^"'`]+)
+        (?P=quote)
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+    _python_patterns = (
+        _Pattern(
+            kind="authentication",
+            expression=re.compile(
+                r"\b(?:Depends|Security)\s*\("
+                r"[^)]*(?:auth|user|token|permission|role)",
+                re.IGNORECASE,
+            ),
+            label="Authentication or authorization dependency",
+            risk="info",
+            framework="python",
+        ),
+        _Pattern(
+            kind="user_input",
+            expression=re.compile(
+                r"\b(?:request\.(?:args|form|json|query_params|path_params)"
+                r"|Body\s*\(|Query\s*\(|Path\s*\(|Header\s*\()",
+                re.IGNORECASE,
+            ),
+            label="Request-controlled input",
+            risk="medium",
+            framework="python",
+        ),
+        _Pattern(
+            kind="database",
+            expression=re.compile(
+                r"\b(?:execute|executemany|cursor|query|raw)\s*\(",
+                re.IGNORECASE,
+            ),
+            label="Database operation",
+            risk="high",
+            framework="python",
+        ),
+        _Pattern(
+            kind="filesystem",
+            expression=re.compile(
+                r"\b(?:open|Path\s*\([^)]*\)\.(?:read_text|write_text|unlink)"
+                r"|os\.(?:remove|unlink|rename|replace)"
+                r"|shutil\.(?:copy|copyfile|move|rmtree))\s*\(",
+                re.IGNORECASE,
+            ),
+            label="Filesystem operation",
+            risk="medium",
+            framework="python",
+        ),
+        _Pattern(
+            kind="outbound_request",
+            expression=re.compile(
+                r"\b(?:requests\.(?:get|post|put|patch|delete|request)"
+                r"|httpx\.(?:get|post|put|patch|delete|request)"
+                r"|urllib\.request\.urlopen"
+                r"|aiohttp\.ClientSession)\b",
+                re.IGNORECASE,
+            ),
+            label="Outbound HTTP request",
+            risk="high",
+            framework="python",
+        ),
+        _Pattern(
+            kind="process_execution",
+            expression=re.compile(
+                r"\b(?:subprocess\.(?:run|call|Popen|check_output|check_call)"
+                r"|os\.(?:system|popen))\s*\(",
+                re.IGNORECASE,
+            ),
+            label="Process or shell execution",
+            risk="critical",
+            framework="python",
+        ),
+        _Pattern(
+            kind="secret_access",
+            expression=re.compile(
+                r"\b(?:os\.(?:environ|getenv)"
+                r"|getenv\s*\(|SecretStr\s*\()",
+                re.IGNORECASE,
+            ),
+            label="Secret or environment configuration access",
+            risk="medium",
+            framework="python",
+        ),
+    )
+
+    _javascript_patterns = (
+        _Pattern(
+            kind="authentication",
+            expression=re.compile(
+                r"\b(?:authenticate|authorize|requireAuth|verifyToken"
+                r"|passport\.authenticate|authMiddleware)\b",
+                re.IGNORECASE,
+            ),
+            label="Authentication or authorization middleware",
+            risk="info",
+            framework="nodejs",
+        ),
+        _Pattern(
+            kind="user_input",
+            expression=re.compile(
+                r"\b(?:req|request)\."
+                r"(?:body|query|params|headers|cookies)\b",
+                re.IGNORECASE,
+            ),
+            label="Request-controlled input",
+            risk="medium",
+            framework="nodejs",
+        ),
+        _Pattern(
+            kind="database",
+            expression=re.compile(
+                r"\b(?:query|execute|raw|findOne|findMany|findUnique"
+                r"|create|update|deleteMany)\s*\(",
+                re.IGNORECASE,
+            ),
+            label="Database operation",
+            risk="high",
+            framework="nodejs",
+        ),
+        _Pattern(
+            kind="filesystem",
+            expression=re.compile(
+                r"\b(?:fs\.)"
+                r"(?:readFile|readFileSync|writeFile|writeFileSync"
+                r"|unlink|unlinkSync|rename|renameSync|createReadStream"
+                r"|createWriteStream)\s*\(",
+                re.IGNORECASE,
+            ),
+            label="Filesystem operation",
+            risk="medium",
+            framework="nodejs",
+        ),
+        _Pattern(
+            kind="outbound_request",
+            expression=re.compile(
+                r"\b(?:fetch|axios\.(?:get|post|put|patch|delete|request)"
+                r"|https?\.request|https?\.get)\s*\(",
+                re.IGNORECASE,
+            ),
+            label="Outbound HTTP request",
+            risk="high",
+            framework="nodejs",
+        ),
+        _Pattern(
+            kind="process_execution",
+            expression=re.compile(
+                r"\b(?:child_process\.)?"
+                r"(?:exec|execSync|spawn|spawnSync|fork)\s*\(",
+                re.IGNORECASE,
+            ),
+            label="Process or shell execution",
+            risk="critical",
+            framework="nodejs",
+        ),
+        _Pattern(
+            kind="secret_access",
+            expression=re.compile(
+                r"\bprocess\.env(?:\.[A-Za-z_$][A-Za-z0-9_$]*"
+                r"|\[[^\]]+\])",
+                re.IGNORECASE,
+            ),
+            label="Secret or environment configuration access",
+            risk="medium",
+            framework="nodejs",
+        ),
+    )
+
+    def scan(
+        self,
+        files: list[AttackSurfaceFile],
+    ) -> AttackSurfaceScanResponse:
+        nodes: list[AttackSurfaceNode] = []
+
+        for file in files:
+            nodes.extend(self._scan_file(file))
+
+        nodes = self._deduplicate_nodes(nodes)
+        edges = self._build_edges(nodes)
+
+        routes = [
+            node
+            for node in nodes
+            if node.kind == "http_route"
+        ]
+
+        return AttackSurfaceScanResponse(
+            mapper=self.name,
+            nodes=nodes,
+            edges=edges,
+            summary=AttackSurfaceSummary(
+                files_scanned=len(files),
+                nodes_found=len(nodes),
+                edges_found=len(edges),
+                routes=len(routes),
+                authenticated_routes=sum(
+                    node.authenticated is True
+                    for node in routes
+                ),
+                unauthenticated_routes=sum(
+                    node.authenticated is False
+                    for node in routes
+                ),
+                databases=self._count_kind(
+                    nodes,
+                    "database",
+                ),
+                filesystems=self._count_kind(
+                    nodes,
+                    "filesystem",
+                ),
+                outbound_requests=self._count_kind(
+                    nodes,
+                    "outbound_request",
+                ),
+                process_executions=self._count_kind(
+                    nodes,
+                    "process_execution",
+                ),
+                secret_accesses=self._count_kind(
+                    nodes,
+                    "secret_access",
+                ),
+            ),
+        )
+
+    def _scan_file(
+        self,
+        file: AttackSurfaceFile,
+    ) -> list[AttackSurfaceNode]:
+        language = file.language.lower().strip()
+
+        if language in {
+            "python",
+            "py",
+        }:
+            return self._scan_python(file)
+
+        if language in {
+            "javascript",
+            "javascriptreact",
+            "typescript",
+            "typescriptreact",
+            "js",
+            "ts",
+        }:
+            return self._scan_javascript(file)
+
+        return []
+
+    def _scan_python(
+        self,
+        file: AttackSurfaceFile,
+    ) -> list[AttackSurfaceNode]:
+        nodes: list[AttackSurfaceNode] = []
+        lines = file.code.splitlines()
+
+        for line_number, line in enumerate(
+            lines,
+            start=1,
+        ):
+            route = self._python_route_pattern.search(
+                line
+            )
+
+            if route:
+                authenticated = self._nearby_authentication(
+                    lines,
+                    line_number,
+                    language="python",
+                )
+
+                nodes.append(
+                    self._node(
+                        kind="http_route",
+                        label=(
+                            f"{route.group('method').upper()} "
+                            f"{route.group('path')}"
+                        ),
+                        file=file.filename,
+                        line=line_number,
+                        evidence=line.strip(),
+                        framework="fastapi",
+                        method=route.group(
+                            "method"
+                        ).upper(),
+                        path=route.group("path"),
+                        authenticated=authenticated,
+                        risk=(
+                            "medium"
+                            if authenticated
+                            else "high"
+                        ),
+                    )
+                )
+
+            flask_route = (
+                self._flask_route_pattern.search(
+                    line
+                )
+            )
+
+            if flask_route:
+                methods = re.findall(
+                    r"['\"]([A-Z]+)['\"]",
+                    flask_route.group("options"),
+                )
+
+                method = (
+                    ",".join(methods)
+                    if methods
+                    else "GET"
+                )
+
+                authenticated = self._nearby_authentication(
+                    lines,
+                    line_number,
+                    language="python",
+                )
+
+                nodes.append(
+                    self._node(
+                        kind="http_route",
+                        label=(
+                            f"{method} "
+                            f"{flask_route.group('path')}"
+                        ),
+                        file=file.filename,
+                        line=line_number,
+                        evidence=line.strip(),
+                        framework="flask",
+                        method=method,
+                        path=flask_route.group("path"),
+                        authenticated=authenticated,
+                        risk=(
+                            "medium"
+                            if authenticated
+                            else "high"
+                        ),
+                    )
+                )
+
+            nodes.extend(
+                self._match_patterns(
+                    file=file,
+                    line=line,
+                    line_number=line_number,
+                    patterns=self._python_patterns,
+                )
+            )
+
+        return nodes
+
+    def _scan_javascript(
+        self,
+        file: AttackSurfaceFile,
+    ) -> list[AttackSurfaceNode]:
+        nodes: list[AttackSurfaceNode] = []
+        lines = file.code.splitlines()
+
+        for line_number, line in enumerate(
+            lines,
+            start=1,
+        ):
+            route = self._express_route_pattern.search(
+                line
+            )
+
+            if route:
+                authenticated = self._nearby_authentication(
+                    lines,
+                    line_number,
+                    language="javascript",
+                )
+
+                nodes.append(
+                    self._node(
+                        kind="http_route",
+                        label=(
+                            f"{route.group('method').upper()} "
+                            f"{route.group('path')}"
+                        ),
+                        file=file.filename,
+                        line=line_number,
+                        evidence=line.strip(),
+                        framework="express",
+                        method=route.group(
+                            "method"
+                        ).upper(),
+                        path=route.group("path"),
+                        authenticated=authenticated,
+                        risk=(
+                            "medium"
+                            if authenticated
+                            else "high"
+                        ),
+                    )
+                )
+
+            nodes.extend(
+                self._match_patterns(
+                    file=file,
+                    line=line,
+                    line_number=line_number,
+                    patterns=self._javascript_patterns,
+                )
+            )
+
+        return nodes
+
+    def _match_patterns(
+        self,
+        *,
+        file: AttackSurfaceFile,
+        line: str,
+        line_number: int,
+        patterns: tuple[_Pattern, ...],
+    ) -> list[AttackSurfaceNode]:
+        return [
+            self._node(
+                kind=pattern.kind,
+                label=pattern.label,
+                file=file.filename,
+                line=line_number,
+                evidence=line.strip(),
+                framework=pattern.framework,
+                risk=pattern.risk,
+            )
+            for pattern in patterns
+            if pattern.expression.search(line)
+        ]
+
+    def _nearby_authentication(
+        self,
+        lines: list[str],
+        route_line: int,
+        *,
+        language: str,
+    ) -> bool:
+        start = max(route_line - 1, 0)
+        end = min(
+            route_line + 7,
+            len(lines),
+        )
+
+        context = "\n".join(
+            lines[start:end]
+        )
+
+        patterns = (
+            self._python_patterns
+            if language == "python"
+            else self._javascript_patterns
+        )
+
+        auth_pattern = next(
+            pattern
+            for pattern in patterns
+            if pattern.kind == "authentication"
+        )
+
+        return bool(
+            auth_pattern.expression.search(context)
+        )
+
+    def _build_edges(
+        self,
+        nodes: list[AttackSurfaceNode],
+    ) -> list[AttackSurfaceEdge]:
+        edges: list[AttackSurfaceEdge] = []
+
+        routes = [
+            node
+            for node in nodes
+            if node.kind == "http_route"
+        ]
+
+        for route in routes:
+            for node in nodes:
+                if (
+                    node.file != route.file
+                    or node.id == route.id
+                    or node.kind == "http_route"
+                ):
+                    continue
+
+                distance = (
+                    node.line_start
+                    - route.line_start
+                )
+
+                if 0 <= distance <= 40:
+                    edges.append(
+                        AttackSurfaceEdge(
+                            source=route.id,
+                            target=node.id,
+                            relationship=(
+                                f"route_reaches_{node.kind}"
+                            ),
+                            confidence=(
+                                0.85
+                                if distance <= 15
+                                else 0.65
+                            ),
+                        )
+                    )
+
+        return edges
+
+    @staticmethod
+    def _node(
+        *,
+        kind: str,
+        label: str,
+        file: str,
+        line: int,
+        evidence: str,
+        risk: str,
+        framework: str | None = None,
+        method: str | None = None,
+        path: str | None = None,
+        authenticated: bool | None = None,
+    ) -> AttackSurfaceNode:
+        identity = (
+            f"{file}:{line}:{kind}:"
+            f"{method or ''}:{path or ''}:"
+            f"{evidence}"
+        )
+
+        digest = hashlib.sha256(
+            identity.encode("utf-8")
+        ).hexdigest()[:16]
+
+        return AttackSurfaceNode(
+            id=f"surface-{digest}",
+            kind=kind,
+            label=label,
+            file=file,
+            line_start=line,
+            line_end=line,
+            framework=framework,
+            method=method,
+            path=path,
+            authenticated=authenticated,
+            risk=risk,
+            evidence=evidence,
+        )
+
+    @staticmethod
+    def _deduplicate_nodes(
+        nodes: list[AttackSurfaceNode],
+    ) -> list[AttackSurfaceNode]:
+        unique: dict[
+            str,
+            AttackSurfaceNode,
+        ] = {}
+
+        for node in nodes:
+            unique[node.id] = node
+
+        return sorted(
+            unique.values(),
+            key=lambda node: (
+                node.file,
+                node.line_start,
+                node.kind,
+                node.id,
+            ),
+        )
+
+    @staticmethod
+    def _count_kind(
+        nodes: list[AttackSurfaceNode],
+        kind: str,
+    ) -> int:
+        return sum(
+            node.kind == kind
+            for node in nodes
+        )

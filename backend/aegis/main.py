@@ -6,6 +6,10 @@ from fastapi import FastAPI, HTTPException
 from aegis.config.settings import get_settings
 from aegis.orchestrator.analyzer import SecurityAnalyzer
 from aegis.schemas.analysis import AnalyzeCodeRequest, AnalyzeCodeResponse
+from aegis.schemas.attack_surface import (
+    AttackSurfaceScanRequest,
+    AttackSurfaceScanResponse,
+)
 from aegis.schemas.dependencies import (
     DependencyManifestScanRequest,
     DependencyManifestScanResponse,
@@ -13,6 +17,7 @@ from aegis.schemas.dependencies import (
     DependencyScanRequest,
     DependencyScanResponse,
 )
+from aegis.security.attack_surface import AttackSurfaceMapper
 from aegis.security.dependency_files import parse_dependency_file
 from aegis.security.osv import OsvDependencyScanner
 
@@ -26,6 +31,7 @@ app = FastAPI(
 )
 
 analyzer = SecurityAnalyzer()
+attack_surface_mapper = AttackSurfaceMapper()
 dependency_scanner = OsvDependencyScanner()
 
 
@@ -84,6 +90,31 @@ async def deep_analyze_code(
             status_code=502,
             detail=f"Deep security analysis failed: {exc}",
         ) from exc
+
+@app.post(
+    "/v1/attack-surface/scan",
+    response_model=AttackSurfaceScanResponse,
+)
+async def scan_attack_surface(
+    request: AttackSurfaceScanRequest,
+) -> AttackSurfaceScanResponse:
+    """
+    Build a deterministic static map of exposed routes,
+    trust boundaries, and security-sensitive operations.
+    """
+    try:
+        return attack_surface_mapper.scan(
+            request.files
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Attack-surface mapping failed: "
+                f"{exc}"
+            ),
+        ) from exc
+
 
 @app.post(
     "/v1/dependencies/manifests/scan",
