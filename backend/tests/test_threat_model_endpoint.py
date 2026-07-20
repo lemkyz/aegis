@@ -54,3 +54,40 @@ def test_threat_model_endpoint_validates_empty_files() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_threat_model_endpoint_returns_exploitability_fields() -> None:
+    response = client.post(
+        "/v1/threat-model/scan",
+        json={
+            "files": [
+                {
+                    "filename": "app.py",
+                    "language": "python",
+                    "code": """
+import os
+
+
+def execute(request):
+    command = request.args.get("command")
+    return os.system(command)
+""".strip(),
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+
+    payload = response.json()
+    threat = next(
+        item
+        for item in payload["threats"]
+        if item["category"] == "command_injection"
+    )
+
+    assert threat["exploitability"] == "confirmed"
+    assert threat["exploitability_confidence"] >= 0.9
+    assert threat["exploitability_reasons"]
+    assert threat["prerequisites"]
+    assert threat["blocking_controls"] == []

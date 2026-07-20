@@ -173,3 +173,243 @@ def debug_secret():
         threat.category == "secret_exposure"
         for threat in result.threats
     )
+
+
+
+def test_detected_threats_receive_exploitability_classification() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="app.py",
+            language="python",
+            code="""
+import os
+
+
+def run_command(command: str):
+    return os.system(command)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    assert result.threats
+
+    threat = result.threats[0]
+
+    assert threat.exploitability == "confirmed"
+    assert threat.exploitability_confidence >= 0.9
+    assert threat.exploitability_reasons
+    assert threat.prerequisites
+    assert threat.blocking_controls == []
+
+
+
+def test_command_injection_is_classified_as_confirmed() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="command.py",
+            language="python",
+            code="""
+import os
+
+
+def execute(request):
+    command = request.args.get("command")
+    return os.system(command)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "command_injection"
+    )
+
+    assert threat.exploitability == "confirmed"
+    assert threat.exploitability_confidence >= 0.9
+    assert threat.exploitability_reasons
+    assert threat.prerequisites
+    assert threat.blocking_controls == []
+
+
+def test_dynamic_sql_without_proven_input_is_likely() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="database.py",
+            language="python",
+            code="""
+def lookup(db, username):
+    query = f"SELECT * FROM users WHERE name = '{username}'"
+    return db.execute(query).fetchone()
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "sql_injection"
+    )
+
+    assert threat.exploitability == "likely"
+    assert threat.exploitability_confidence >= 0.8
+    assert threat.exploitability_reasons
+    assert threat.prerequisites
+
+
+def test_ssrf_with_request_input_is_likely() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="ssrf.py",
+            language="python",
+            code="""
+import requests
+
+
+def fetch(request):
+    url = request.args.get("url")
+    return requests.get(url)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "ssrf"
+    )
+
+    assert threat.exploitability == "likely"
+    assert threat.exploitability_confidence >= 0.9
+    assert threat.exploitability_reasons
+    assert threat.prerequisites
+
+
+def test_secret_logging_is_confirmed() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="secret.py",
+            language="python",
+            code="""
+import os
+
+
+def leak():
+    token = os.environ["APP_TOKEN"]
+    print(token)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "secret_exposure"
+    )
+
+    assert threat.exploitability == "confirmed"
+    assert threat.exploitability_confidence >= 0.9
+    assert threat.exploitability_reasons
+    assert threat.prerequisites
+
+
+def test_unsafe_data_flow_is_possible() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="flow.py",
+            language="python",
+            code="""
+import requests
+
+
+def forward(request):
+    target = request.args.get("target")
+    return requests.get(target)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "unsafe_data_flow"
+    )
+
+    assert threat.exploitability == "possible"
+    assert threat.exploitability_confidence >= 0.7
+    assert threat.exploitability_reasons
+    assert threat.prerequisites
+
+
+
+def test_typescript_exec_template_parameter_is_confirmed() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="command.ts",
+            language="typescript",
+            code="""
+import { exec } from "node:child_process";
+
+
+function pingHost(input: string) {
+    return exec(`ping -c 1 ${input}`);
+}
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "command_injection"
+    )
+
+    assert threat.exploitability == "confirmed"
+    assert threat.exploitability_confidence >= 0.9
+    assert any(
+        "Attacker-controlled input"
+        in reason
+        for reason in threat.exploitability_reasons
+    )
+
+
+def test_python_intermediate_command_variable_is_confirmed() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="command.py",
+            language="python",
+            code="""
+import os
+
+
+def ping_host(host):
+    command = f"ping -c 1 {host}"
+    return os.system(command)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "command_injection"
+    )
+
+    assert threat.exploitability == "confirmed"
+    assert threat.exploitability_confidence >= 0.9

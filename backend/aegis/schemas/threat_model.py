@@ -28,6 +28,16 @@ ThreatSeverity = Literal[
 ]
 
 
+Exploitability = Literal[
+    "confirmed",
+    "likely",
+    "possible",
+    "unlikely",
+    "not_exploitable",
+    "unknown",
+]
+
+
 class ThreatModelScanRequest(BaseModel):
     files: list[AttackSurfaceFile] = Field(
         min_length=1,
@@ -92,6 +102,22 @@ class ThreatFinding(BaseModel):
         default_factory=list,
     )
     source_node_ids: list[str] = Field(
+        default_factory=list,
+    )
+
+    exploitability: Exploitability = "unknown"
+    exploitability_confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+    )
+    exploitability_reasons: list[str] = Field(
+        default_factory=list,
+    )
+    prerequisites: list[str] = Field(
+        default_factory=list,
+    )
+    blocking_controls: list[str] = Field(
         default_factory=list,
     )
 

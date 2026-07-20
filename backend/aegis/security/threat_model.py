@@ -1,4 +1,5 @@
 import hashlib
+import re
 
 from aegis.schemas.attack_surface import (
     AttackSurfaceFile,
@@ -247,7 +248,14 @@ class ThreatModeler:
             )
 
             if threat is not None:
-                threats.append(threat)
+                threats.append(
+                    self._classify_exploitability(
+                        threat=threat,
+                        node=node,
+                        context=context,
+                        nodes=nodes,
+                    )
+                )
 
         return sorted(
             threats,
@@ -732,6 +740,118 @@ class ThreatModeler:
         )
 
     @staticmethod
+    def _has_direct_parameter_flow(
+        *,
+        evidence: str,
+        context: str,
+    ) -> bool:
+        parameters = (
+            ThreatModeler._extract_parameter_names(
+                context
+            )
+        )
+
+        return any(
+            re.search(
+                rf"\b{re.escape(parameter)}\b",
+                evidence,
+            )
+            is not None
+            for parameter in parameters
+        )
+
+    @classmethod
+    def _has_intermediate_parameter_flow(
+        cls,
+        *,
+        evidence: str,
+        context: str,
+    ) -> bool:
+        parameter_names = cls._extract_parameter_names(
+            context
+        )
+
+        sink_variables = re.findall(
+            r"(?:os\.system|os\.popen|exec|execSync)"
+            r"\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)",
+            evidence,
+        )
+
+        if not sink_variables:
+            return False
+
+        for variable in sink_variables:
+            assignments = re.findall(
+                rf"\b{re.escape(variable)}\b\s*=\s*(.+)",
+                context,
+            )
+
+            for expression in assignments:
+                if any(
+                    re.search(
+                        rf"\b{re.escape(parameter)}\b",
+                        expression,
+                    )
+                    is not None
+                    for parameter in parameter_names
+                ):
+                    return True
+
+        return False
+
+    @staticmethod
+    def _extract_parameter_names(
+        context: str,
+    ) -> set[str]:
+        parameter_blocks: list[str] = []
+
+        patterns = (
+            r"def\s+[A-Za-z_]\w*\s*\(([^)]*)\)",
+            r"function\s+[A-Za-z_$][A-Za-z0-9_$]*"
+            r"\s*\(([^)]*)\)",
+            r"\(([^)]*)\)\s*=>",
+        )
+
+        for pattern in patterns:
+            parameter_blocks.extend(
+                re.findall(
+                    pattern,
+                    context,
+                    flags=re.MULTILINE,
+                )
+            )
+
+        parameters: set[str] = set()
+
+        for block in parameter_blocks:
+            for raw_parameter in block.split(","):
+                parameter = raw_parameter.strip()
+
+                if not parameter:
+                    continue
+
+                parameter = parameter.split("=", 1)[0]
+                parameter = parameter.split(":", 1)[0]
+                parameter = parameter.lstrip("*").strip()
+
+                match = re.search(
+                    r"[A-Za-z_$][A-Za-z0-9_$]*",
+                    parameter,
+                )
+
+                if match:
+                    parameters.add(match.group(0))
+
+        parameters.update(
+            re.findall(
+                r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*=>",
+                context,
+            )
+        )
+
+        return parameters
+
+    @staticmethod
     def _has_nearby_user_input(
         node: AttackSurfaceNode,
         nodes: list[AttackSurfaceNode],
@@ -745,6 +865,258 @@ class ThreatModeler:
                 - node.line_start
             ) <= distance
             for candidate in nodes
+        )
+
+    def _classify_exploitability(
+        self,
+        *,
+        threat: ThreatFinding,
+        node: AttackSurfaceNode,
+        context: str,
+        nodes: list[AttackSurfaceNode],
+    ) -> ThreatFinding:
+        lowered = context.lower()
+
+        has_user_input = self._has_nearby_user_input(
+            node,
+            nodes,
+        )
+        has_direct_parameter_flow = (
+            self._has_direct_parameter_flow(
+                evidence=node.evidence,
+                context=context,
+            )
+        )
+        has_intermediate_parameter_flow = (
+            self._has_intermediate_parameter_flow(
+                evidence=node.evidence,
+                context=context,
+            )
+        )
+
+        exploitability = "possible"
+        exploitability_confidence = 0.68
+        reasons: list[str] = []
+        prerequisites: list[str] = []
+        blocking_controls: list[str] = []
+
+        if threat.category == "command_injection":
+            shell_execution = any(
+                marker in lowered
+                for marker in (
+                    "os.system(",
+                    "os.popen(",
+                    "child_process.exec(",
+                    "child_process.execsync(",
+                    "exec(`",
+                    "exec('",
+                    'exec("',
+                    "shell=true",
+                    "shell: true",
+                )
+            )
+
+            if (
+                shell_execution
+                and (
+                    has_user_input
+                    or has_direct_parameter_flow
+                    or has_intermediate_parameter_flow
+                )
+            ):
+                exploitability = "confirmed"
+                exploitability_confidence = 0.96
+                reasons.extend(
+                    [
+                        "Attacker-controlled input was detected near process execution.",
+                        "The process API invokes a shell or command-string execution path.",
+                    ]
+                )
+            elif shell_execution:
+                exploitability = "likely"
+                exploitability_confidence = 0.88
+                reasons.extend(
+                    [
+                        "A shell or command-string execution sink was detected.",
+                        "Direct attacker control could not be proven from the static context.",
+                    ]
+                )
+            else:
+                exploitability = "possible"
+                exploitability_confidence = 0.72
+                reasons.append(
+                    "A risky process-execution operation was detected."
+                )
+
+            prerequisites.extend(
+                [
+                    "An attacker can influence a value used by the process operation.",
+                    "The application process has permission to execute the resulting command.",
+                ]
+            )
+
+        elif threat.category == "sql_injection":
+            dynamic_sql = any(
+                marker in lowered
+                for marker in (
+                    "${",
+                    ".format(",
+                    "query = f",
+                    "query=f",
+                    "execute(query)",
+                    "db.query(`",
+                )
+            )
+
+            if dynamic_sql and has_user_input:
+                exploitability = "confirmed"
+                exploitability_confidence = 0.94
+                reasons.extend(
+                    [
+                        "Request-controlled input was detected near the database operation.",
+                        "The query is dynamically constructed or executed without parameters.",
+                    ]
+                )
+            elif dynamic_sql:
+                exploitability = "likely"
+                exploitability_confidence = 0.85
+                reasons.extend(
+                    [
+                        "A dynamically constructed database query was detected.",
+                        "Static analysis could not prove the origin of every query value.",
+                    ]
+                )
+            else:
+                exploitability = "possible"
+                exploitability_confidence = 0.70
+                reasons.append(
+                    "A database sink with insufficiently constrained query construction was detected."
+                )
+
+            prerequisites.extend(
+                [
+                    "An attacker can influence a value used in the query.",
+                    "The database driver executes the constructed query.",
+                ]
+            )
+
+        elif threat.category == "path_traversal":
+            if has_user_input:
+                exploitability = "likely"
+                exploitability_confidence = 0.89
+                reasons.extend(
+                    [
+                        "User-controlled data was detected near the filesystem operation.",
+                        "No effective root-containment control was detected.",
+                    ]
+                )
+            else:
+                exploitability = "possible"
+                exploitability_confidence = 0.69
+                reasons.append(
+                    "A filesystem path reaches a sensitive operation without proven containment."
+                )
+
+            prerequisites.extend(
+                [
+                    "An attacker can influence the filename or path.",
+                    "The application can access data outside the intended directory.",
+                ]
+            )
+
+        elif threat.category == "ssrf":
+            if has_user_input:
+                exploitability = "likely"
+                exploitability_confidence = 0.91
+                reasons.extend(
+                    [
+                        "Request-controlled data was detected near an outbound request.",
+                        "No host or network-destination allowlist was detected.",
+                    ]
+                )
+            else:
+                exploitability = "possible"
+                exploitability_confidence = 0.70
+                reasons.append(
+                    "An outbound request destination may be influenced at runtime."
+                )
+
+            prerequisites.extend(
+                [
+                    "An attacker can influence the outbound destination.",
+                    "The application can reach the targeted network service.",
+                ]
+            )
+
+        elif threat.category == "secret_exposure":
+            direct_output = any(
+                marker in lowered
+                for marker in (
+                    "print(",
+                    "console.log(",
+                    "logger.info(",
+                    "logger.debug(",
+                    "res.send(",
+                    "res.json(",
+                    "jsonresponse(",
+                )
+            )
+
+            if direct_output:
+                exploitability = "confirmed"
+                exploitability_confidence = 0.93
+                reasons.extend(
+                    [
+                        "Sensitive configuration is loaded in the same context as an output or logging operation.",
+                        "The detected output path can disclose the secret value.",
+                    ]
+                )
+            else:
+                exploitability = "possible"
+                exploitability_confidence = 0.66
+                reasons.append(
+                    "Sensitive configuration enters an exposure-prone application context."
+                )
+
+            prerequisites.append(
+                "An attacker or unauthorized observer can access the affected output, log, or response."
+            )
+
+        elif threat.category == "authentication_bypass":
+            exploitability = "likely"
+            exploitability_confidence = 0.87
+            reasons.extend(
+                [
+                    "An externally reachable route lacks a detected authentication control.",
+                    "The route may expose privileged behavior to unauthenticated callers.",
+                ]
+            )
+            prerequisites.append(
+                "The affected route is reachable by an unauthenticated attacker."
+            )
+
+        elif threat.category == "unsafe_data_flow":
+            exploitability = "possible"
+            exploitability_confidence = 0.74
+            reasons.extend(
+                [
+                    "Request-controlled input enters application logic.",
+                    "The complete source-to-sink path requires further data-flow verification.",
+                ]
+            )
+            prerequisites.append(
+                "The attacker-controlled value reaches a security-sensitive operation."
+            )
+
+        return threat.model_copy(
+            update={
+                "exploitability": exploitability,
+                "exploitability_confidence":
+                    exploitability_confidence,
+                "exploitability_reasons": reasons,
+                "prerequisites": prerequisites,
+                "blocking_controls": blocking_controls,
+            }
         )
 
     def _threat(

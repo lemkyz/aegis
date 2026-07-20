@@ -277,7 +277,8 @@ class ThreatFindingTreeItem extends vscode.TreeItem {
         super(threat.title, vscode.TreeItemCollapsibleState.None);
         this.threat = threat;
         this.description =
-            `${formatThreatCategory(threat.category)} · `
+            `${formatExploitability(threat.exploitability)} · `
+                + `${formatThreatCategory(threat.category)} · `
                 + `${threat.file}:${threat.line}`;
         const firstMitigation = threat.mitigations[0]
             ?? "Review the affected security boundary.";
@@ -286,7 +287,9 @@ class ThreatFindingTreeItem extends vscode.TreeItem {
             "",
             `- Severity: ${threat.severity.toUpperCase()}`,
             `- Category: ${formatThreatCategory(threat.category)}`,
-            `- Confidence: ${Math.round(threat.confidence * 100)}%`,
+            `- Threat confidence: ${Math.round(threat.confidence * 100)}%`,
+            `- Exploitability: ${formatExploitability(threat.exploitability)}`,
+            `- Exploitability confidence: ${Math.round(threat.exploitability_confidence * 100)}%`,
             `- File: ${threat.file}`,
             `- Line: ${threat.line}`,
             `- Affected asset: ${threat.affected_asset}`,
@@ -294,6 +297,15 @@ class ThreatFindingTreeItem extends vscode.TreeItem {
             `- Trust boundary: ${threat.trust_boundary ?? "Not identified"}`,
             "",
             threat.description,
+            "",
+            "**Exploitability reasons:**",
+            ...formatMarkdownBulletLines(threat.exploitability_reasons, "No deterministic reason was recorded."),
+            "",
+            "**Prerequisites:**",
+            ...formatMarkdownBulletLines(threat.prerequisites, "No prerequisite was identified."),
+            "",
+            "**Blocking controls:**",
+            ...formatMarkdownBulletLines(threat.blocking_controls, "None detected."),
             "",
             `**First mitigation:** ${firstMitigation}`,
         ].join("\n"));
@@ -1040,7 +1052,34 @@ function buildThreatModelReport(result) {
         lines.push("No deterministic threat was identified.", "");
     }
     result.threats.forEach((threat, index) => {
-        lines.push(`### ${index + 1}. ${threat.title}`, "", `- **Severity:** ${threat.severity.toUpperCase()}`, `- **Category:** ${formatThreatCategory(threat.category)}`, `- **Confidence:** ${Math.round(threat.confidence * 100)}%`, `- **Location:** \`${threat.file}:${threat.line}\``, `- **Affected asset:** ${threat.affected_asset}`, `- **Entry point:** ${threat.entry_point ?? "Not identified"}`, `- **Trust boundary:** ${threat.trust_boundary ?? "Not identified"}`, "", threat.description, "", "#### Attack Path", "");
+        lines.push(`### ${index + 1}. ${threat.title}`, "", `- **Severity:** ${threat.severity.toUpperCase()}`, `- **Category:** ${formatThreatCategory(threat.category)}`, `- **Threat confidence:** ${Math.round(threat.confidence * 100)}%`, `- **Exploitability:** ${formatExploitability(threat.exploitability)}`, `- **Exploitability confidence:** ${Math.round(threat.exploitability_confidence * 100)}%`, `- **Location:** \`${threat.file}:${threat.line}\``, `- **Affected asset:** ${threat.affected_asset}`, `- **Entry point:** ${threat.entry_point ?? "Not identified"}`, `- **Trust boundary:** ${threat.trust_boundary ?? "Not identified"}`, "", threat.description, "", "#### Exploitability Reasons", "");
+        if (threat.exploitability_reasons.length === 0) {
+            lines.push("- No deterministic reason was recorded.");
+        }
+        else {
+            for (const reason of threat.exploitability_reasons) {
+                lines.push(`- ${reason}`);
+            }
+        }
+        lines.push("", "#### Prerequisites", "");
+        if (threat.prerequisites.length === 0) {
+            lines.push("- No prerequisite was identified.");
+        }
+        else {
+            for (const prerequisite of threat.prerequisites) {
+                lines.push(`- ${prerequisite}`);
+            }
+        }
+        lines.push("", "#### Blocking Controls", "");
+        if (threat.blocking_controls.length === 0) {
+            lines.push("- None detected.");
+        }
+        else {
+            for (const control of threat.blocking_controls) {
+                lines.push(`- ${control}`);
+            }
+        }
+        lines.push("", "#### Attack Path", "");
         for (const step of threat.attack_path) {
             lines.push(`- ${step}`);
         }
@@ -1069,6 +1108,23 @@ function buildThreatModelReport(result) {
     }
     lines.push("", "---", "", "> This deterministic threat model is based on statically detected application behavior and may not capture every runtime data flow.");
     return lines.join("\n");
+}
+function formatExploitability(exploitability) {
+    const labels = {
+        confirmed: "CONFIRMED",
+        likely: "LIKELY",
+        possible: "POSSIBLE",
+        unlikely: "UNLIKELY",
+        not_exploitable: "NOT EXPLOITABLE",
+        unknown: "UNKNOWN",
+    };
+    return labels[exploitability];
+}
+function formatMarkdownBulletLines(values, emptyMessage) {
+    if (values.length === 0) {
+        return [`- ${emptyMessage}`];
+    }
+    return values.map((value) => `- ${value}`);
 }
 function formatThreatCategory(category) {
     const labels = {

@@ -298,6 +298,14 @@ type ThreatCategory =
 
 type ThreatSeverity = Severity;
 
+type Exploitability =
+  | "confirmed"
+  | "likely"
+  | "possible"
+  | "unlikely"
+  | "not_exploitable"
+  | "unknown";
+
 interface ThreatAsset {
   id: string;
   name: string;
@@ -334,6 +342,11 @@ interface ThreatFinding {
   mitigations: string[];
   evidence: string[];
   source_node_ids: string[];
+  exploitability: Exploitability;
+  exploitability_confidence: number;
+  exploitability_reasons: string[];
+  prerequisites: string[];
+  blocking_controls: string[];
 }
 
 interface ThreatModelSummary {
@@ -876,7 +889,8 @@ class ThreatFindingTreeItem
     );
 
     this.description =
-      `${formatThreatCategory(threat.category)} · `
+      `${formatExploitability(threat.exploitability)} · `
+      + `${formatThreatCategory(threat.category)} · `
       + `${threat.file}:${threat.line}`;
 
     const firstMitigation =
@@ -889,7 +903,9 @@ class ThreatFindingTreeItem
         "",
         `- Severity: ${threat.severity.toUpperCase()}`,
         `- Category: ${formatThreatCategory(threat.category)}`,
-        `- Confidence: ${Math.round(threat.confidence * 100)}%`,
+        `- Threat confidence: ${Math.round(threat.confidence * 100)}%`,
+        `- Exploitability: ${formatExploitability(threat.exploitability)}`,
+        `- Exploitability confidence: ${Math.round(threat.exploitability_confidence * 100)}%`,
         `- File: ${threat.file}`,
         `- Line: ${threat.line}`,
         `- Affected asset: ${threat.affected_asset}`,
@@ -897,6 +913,24 @@ class ThreatFindingTreeItem
         `- Trust boundary: ${threat.trust_boundary ?? "Not identified"}`,
         "",
         threat.description,
+        "",
+        "**Exploitability reasons:**",
+        ...formatMarkdownBulletLines(
+          threat.exploitability_reasons,
+          "No deterministic reason was recorded.",
+        ),
+        "",
+        "**Prerequisites:**",
+        ...formatMarkdownBulletLines(
+          threat.prerequisites,
+          "No prerequisite was identified.",
+        ),
+        "",
+        "**Blocking controls:**",
+        ...formatMarkdownBulletLines(
+          threat.blocking_controls,
+          "None detected.",
+        ),
         "",
         `**First mitigation:** ${firstMitigation}`,
       ].join("\n"),
@@ -2202,13 +2236,61 @@ function buildThreatModelReport(
         "",
         `- **Severity:** ${threat.severity.toUpperCase()}`,
         `- **Category:** ${formatThreatCategory(threat.category)}`,
-        `- **Confidence:** ${Math.round(threat.confidence * 100)}%`,
+        `- **Threat confidence:** ${Math.round(threat.confidence * 100)}%`,
+        `- **Exploitability:** ${formatExploitability(threat.exploitability)}`,
+        `- **Exploitability confidence:** ${Math.round(threat.exploitability_confidence * 100)}%`,
         `- **Location:** \`${threat.file}:${threat.line}\``,
         `- **Affected asset:** ${threat.affected_asset}`,
         `- **Entry point:** ${threat.entry_point ?? "Not identified"}`,
         `- **Trust boundary:** ${threat.trust_boundary ?? "Not identified"}`,
         "",
         threat.description,
+        "",
+        "#### Exploitability Reasons",
+        "",
+      );
+
+      if (threat.exploitability_reasons.length === 0) {
+        lines.push(
+          "- No deterministic reason was recorded.",
+        );
+      } else {
+        for (const reason of threat.exploitability_reasons) {
+          lines.push(`- ${reason}`);
+        }
+      }
+
+      lines.push(
+        "",
+        "#### Prerequisites",
+        "",
+      );
+
+      if (threat.prerequisites.length === 0) {
+        lines.push(
+          "- No prerequisite was identified.",
+        );
+      } else {
+        for (const prerequisite of threat.prerequisites) {
+          lines.push(`- ${prerequisite}`);
+        }
+      }
+
+      lines.push(
+        "",
+        "#### Blocking Controls",
+        "",
+      );
+
+      if (threat.blocking_controls.length === 0) {
+        lines.push("- None detected.");
+      } else {
+        for (const control of threat.blocking_controls) {
+          lines.push(`- ${control}`);
+        }
+      }
+
+      lines.push(
         "",
         "#### Attack Path",
         "",
@@ -2280,6 +2362,36 @@ function buildThreatModelReport(
   );
 
   return lines.join("\n");
+}
+
+
+function formatExploitability(
+  exploitability: Exploitability,
+): string {
+  const labels: Record<Exploitability, string> = {
+    confirmed: "CONFIRMED",
+    likely: "LIKELY",
+    possible: "POSSIBLE",
+    unlikely: "UNLIKELY",
+    not_exploitable: "NOT EXPLOITABLE",
+    unknown: "UNKNOWN",
+  };
+
+  return labels[exploitability];
+}
+
+
+function formatMarkdownBulletLines(
+  values: string[],
+  emptyMessage: string,
+): string[] {
+  if (values.length === 0) {
+    return [`- ${emptyMessage}`];
+  }
+
+  return values.map(
+    (value) => `- ${value}`,
+  );
 }
 
 
