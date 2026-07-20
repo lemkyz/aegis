@@ -1185,6 +1185,21 @@ async function applySecureFix() {
         void vscode.window.showWarningMessage("Aegis: No applicable secure patch was found.");
         return;
     }
+    const configuration = vscode.workspace.getConfiguration("aegis");
+    const backendUrl = configuration
+        .get("backendUrl", "http://127.0.0.1:8000")
+        .replace(/\/+$/, "");
+    const baselineResult = await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Aegis is recording the security baseline",
+        cancellable: false,
+    }, async () => requestAnalysis({
+        backendUrl,
+        code: document.getText(),
+        filename: path.basename(document.fileName) || "unknown.py",
+        language: normalizeLanguage(document.languageId),
+        mode: "fast",
+    }));
     const originalSelectionCode = document.getText(analyzedState.selection);
     const originalSelectionStartOffset = document.offsetAt(analyzedState.selection.start);
     const secureSelectionCode = preserveIndentation(originalSelectionCode, patch);
@@ -1254,10 +1269,6 @@ async function applySecureFix() {
     }
     diagnosticCollection?.delete(document.uri);
     lastAnalysis = undefined;
-    const configuration = vscode.workspace.getConfiguration("aegis");
-    const backendUrl = configuration
-        .get("backendUrl", "http://127.0.0.1:8000")
-        .replace(/\/+$/, "");
     const verificationResult = await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         title: "Aegis is verifying the secure fix",
@@ -1269,6 +1280,7 @@ async function applySecureFix() {
         language: normalizeLanguage(document.languageId),
         mode: "fast",
     }));
+    const securityDelta = compareSecurityVerificationResults(analyzedState.response, baselineResult, verificationResult);
     updateDiagnostics(document, verificationResult, 0);
     lastAnalysis = {
         documentUri: document.uri.toString(),
@@ -1278,23 +1290,61 @@ async function applySecureFix() {
         mode: "fast",
     };
     await showAnalysisResult(verificationResult, "fast");
-    if (verificationResult.findings.length === 0) {
-        const syntaxMessage = syntaxVerification.status === "passed"
-            ? `${syntaxVerification.name}: PASSED`
-            : `${syntaxVerification.name}: SKIPPED`;
+    const syntaxMessage = syntaxVerification.status === "passed"
+        ? `${syntaxVerification.name}: PASSED`
+        : `${syntaxVerification.name}: SKIPPED`;
+    const targetResolved = securityDelta.remainingTargetFindings.length === 0;
+    const regressionFree = securityDelta.introducedFindings.length === 0;
+    if (targetResolved && regressionFree) {
+        const existingMessage = securityDelta.unchangedFindings.length > 0
+            ? `${securityDelta.unchangedFindings.length} unrelated pre-existing finding(s) remain.`
+            : "No pre-existing findings remain.";
         void vscode.window.showInformationMessage([
             "Aegis Fix Status: VERIFIED.",
             syntaxMessage + ".",
-            "Security rescan: PASSED — no findings remain.",
+            "Target vulnerability: RESOLVED.",
+            "Regression check: PASSED.",
+            existingMessage,
         ].join(" "));
         return;
     }
-    void vscode.window.showWarningMessage(`Aegis Fix Status: STILL VULNERABLE — ${verificationResult.findings.length} finding(s) remain after rescanning.`, "Open Problems").then((action) => {
+    const failureReasons = [];
+    if (!targetResolved) {
+        failureReasons.push(`${securityDelta.remainingTargetFindings.length} target finding(s) remain`);
+    }
+    if (!regressionFree) {
+        failureReasons.push(`${securityDelta.introducedFindings.length} new finding(s) were introduced`);
+    }
+    void vscode.window.showWarningMessage(`Aegis Fix Status: FAILED — ${failureReasons.join("; ")}.`, "Open Problems").then((action) => {
         if (action === "Open Problems") {
             void vscode.commands.executeCommand("workbench.actions.view.problems");
         }
     });
     editor.revealRange(analyzedState.selection, vscode.TextEditorRevealType.InCenter);
+}
+function compareSecurityVerificationResults(analyzedResponse, baselineResponse, verificationResponse) {
+    const targetRuleIds = Array.from(new Set(analyzedResponse.findings.flatMap((finding) => finding.scanner_evidence.map((evidence) => evidence.rule_id))));
+    const baselineIdentities = new Set(baselineResponse.findings.map(securityFindingIdentity));
+    const remainingTargetFindings = verificationResponse.findings.filter((finding) => finding.scanner_evidence.some((evidence) => targetRuleIds.includes(evidence.rule_id)));
+    const introducedFindings = verificationResponse.findings.filter((finding) => !baselineIdentities.has(securityFindingIdentity(finding)));
+    const unchangedFindings = verificationResponse.findings.filter((finding) => baselineIdentities.has(securityFindingIdentity(finding)));
+    return {
+        targetRuleIds,
+        remainingTargetFindings,
+        introducedFindings,
+        unchangedFindings,
+    };
+}
+function securityFindingIdentity(finding) {
+    const ruleIds = finding.scanner_evidence
+        .map((evidence) => evidence.rule_id)
+        .sort()
+        .join(",");
+    return [
+        ruleIds || finding.title,
+        finding.severity,
+        finding.cwe.slice().sort().join(","),
+    ].join("|");
 }
 async function verifyPatchedDocumentSyntax(document) {
     const language = normalizeLanguage(document.languageId);
