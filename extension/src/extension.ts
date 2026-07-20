@@ -60,6 +60,18 @@ interface AnalysisInput {
   mode: AnalysisMode;
 }
 
+type VerificationStatus =
+  | "passed"
+  | "failed"
+  | "skipped";
+
+interface VerificationCheckResult {
+  name: string;
+  status: VerificationStatus;
+  command?: string;
+  details: string;
+}
+
 interface WorkspaceFileResult {
   uri: vscode.Uri;
   relativePath: string;
@@ -2289,6 +2301,9 @@ async function applySecureFix(): Promise<void> {
     analyzedState.selection,
   );
 
+  const originalSelectionStartOffset =
+    document.offsetAt(analyzedState.selection.start);
+
   const secureSelectionCode = preserveIndentation(
     originalSelectionCode,
     patch,
@@ -2356,6 +2371,74 @@ async function applySecureFix(): Promise<void> {
     return;
   }
 
+  const syntaxVerification =
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "Aegis is checking patch syntax",
+        cancellable: false,
+      },
+      async () =>
+        verifyPatchedDocumentSyntax(document),
+    );
+
+  if (syntaxVerification.status === "failed") {
+    const patchedSelection = new vscode.Range(
+      document.positionAt(
+        originalSelectionStartOffset,
+      ),
+      document.positionAt(
+        originalSelectionStartOffset +
+          secureSelectionCode.length,
+      ),
+    );
+
+    const rollbackEdit = new vscode.WorkspaceEdit();
+
+    rollbackEdit.replace(
+      document.uri,
+      patchedSelection,
+      originalSelectionCode,
+    );
+
+    const rolledBack =
+      await vscode.workspace.applyEdit(
+        rollbackEdit,
+      );
+
+    if (rolledBack) {
+      await document.save();
+    }
+
+    diagnosticCollection?.delete(document.uri);
+    lastAnalysis = undefined;
+
+    const rollbackStatus = rolledBack
+      ? "The original code was restored automatically."
+      : "Automatic rollback failed. Review the file immediately.";
+
+    void vscode.window.showErrorMessage(
+      [
+        "Aegis Fix Status: FAILED — syntax verification did not pass.",
+        syntaxVerification.details,
+        rollbackStatus,
+      ].join(" "),
+      "Open File",
+    ).then((action) => {
+      if (action === "Open File") {
+        void vscode.window.showTextDocument(
+          document,
+          {
+            preview: false,
+            viewColumn: vscode.ViewColumn.One,
+          },
+        );
+      }
+    });
+
+    return;
+  }
+
   diagnosticCollection?.delete(document.uri);
   lastAnalysis = undefined;
 
@@ -2410,8 +2493,17 @@ async function applySecureFix(): Promise<void> {
   );
 
   if (verificationResult.findings.length === 0) {
+    const syntaxMessage =
+      syntaxVerification.status === "passed"
+        ? `${syntaxVerification.name}: PASSED`
+        : `${syntaxVerification.name}: SKIPPED`;
+
     void vscode.window.showInformationMessage(
-      "Aegis Fix Status: VERIFIED — the vulnerability was not detected after rescanning.",
+      [
+        "Aegis Fix Status: VERIFIED.",
+        syntaxMessage + ".",
+        "Security rescan: PASSED — no findings remain.",
+      ].join(" "),
     );
     return;
   }
@@ -2431,6 +2523,191 @@ async function applySecureFix(): Promise<void> {
     analyzedState.selection,
     vscode.TextEditorRevealType.InCenter,
   );
+}
+
+async function verifyPatchedDocumentSyntax(
+  document: vscode.TextDocument,
+): Promise<VerificationCheckResult> {
+  const language = normalizeLanguage(
+    document.languageId,
+  );
+
+  const workspaceFolder =
+    vscode.workspace.getWorkspaceFolder(
+      document.uri,
+    );
+
+  const workingDirectory =
+    workspaceFolder?.uri.fsPath ??
+    path.dirname(document.fileName);
+
+  if (language === "python") {
+    return runVerificationCommand({
+      name: "Python syntax",
+      command: "python3",
+      args: [
+        "-m",
+        "py_compile",
+        document.fileName,
+      ],
+      cwd: workingDirectory,
+      timeout: 30_000,
+    });
+  }
+
+  if (language === "javascript") {
+    return runVerificationCommand({
+      name: "JavaScript syntax",
+      command: "node",
+      args: [
+        "--check",
+        document.fileName,
+      ],
+      cwd: workingDirectory,
+      timeout: 30_000,
+    });
+  }
+
+  if (language === "typescript") {
+    const result = await runVerificationCommand({
+      name: "TypeScript check",
+      command: "npx",
+      args: [
+        "--no-install",
+        "tsc",
+        "--noEmit",
+        "--pretty",
+        "false",
+        "--skipLibCheck",
+        "--target",
+        "ES2022",
+        "--module",
+        "commonjs",
+        document.fileName,
+      ],
+      cwd: workingDirectory,
+      timeout: 90_000,
+      missingToolMeansSkipped: true,
+    });
+
+    return result;
+  }
+
+  return {
+    name: "Syntax check",
+    status: "skipped",
+    details:
+      `No syntax verifier is configured for ${document.languageId}.`,
+  };
+}
+
+interface VerificationCommandInput {
+  name: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  timeout: number;
+  missingToolMeansSkipped?: boolean;
+}
+
+async function runVerificationCommand(
+  input: VerificationCommandInput,
+): Promise<VerificationCheckResult> {
+  const printableCommand = [
+    input.command,
+    ...input.args,
+  ].join(" ");
+
+  try {
+    const result = await execFileAsync(
+      input.command,
+      input.args,
+      {
+        cwd: input.cwd,
+        timeout: input.timeout,
+        maxBuffer: 1024 * 1024,
+      },
+    );
+
+    const output = [
+      result.stdout,
+      result.stderr,
+    ]
+      .filter(
+        (value) =>
+          typeof value === "string" &&
+          value.trim().length > 0,
+      )
+      .join("\n")
+      .trim();
+
+    return {
+      name: input.name,
+      status: "passed",
+      command: printableCommand,
+      details:
+        output ||
+        `${input.name} completed successfully.`,
+    };
+  } catch (error: unknown) {
+    const commandError = error as {
+      code?: string | number;
+      stdout?: string;
+      stderr?: string;
+      message?: string;
+      killed?: boolean;
+      signal?: string;
+    };
+
+    const missingTool =
+      commandError.code === "ENOENT" ||
+      (
+        typeof commandError.stderr === "string" &&
+        (
+          commandError.stderr.includes(
+            "could not determine executable",
+          ) ||
+          commandError.stderr.includes(
+            "not found",
+          )
+        )
+      );
+
+    if (
+      missingTool &&
+      input.missingToolMeansSkipped
+    ) {
+      return {
+        name: input.name,
+        status: "skipped",
+        command: printableCommand,
+        details:
+          `${input.name} was skipped because the required local tool is unavailable.`,
+      };
+    }
+
+    const details = [
+      commandError.stderr,
+      commandError.stdout,
+      commandError.message,
+    ]
+      .filter(
+        (value) =>
+          typeof value === "string" &&
+          value.trim().length > 0,
+      )
+      .join("\n")
+      .trim();
+
+    return {
+      name: input.name,
+      status: "failed",
+      command: printableCommand,
+      details:
+        details ||
+        `${input.name} failed without diagnostic output.`,
+    };
+  }
 }
 
 async function requestAnalysis(
