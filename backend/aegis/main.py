@@ -10,6 +10,10 @@ from aegis.schemas.attack_surface import (
     AttackSurfaceScanRequest,
     AttackSurfaceScanResponse,
 )
+from aegis.schemas.threat_model import (
+    ThreatModelScanRequest,
+    ThreatModelScanResponse,
+)
 from aegis.schemas.dependencies import (
     DependencyManifestScanRequest,
     DependencyManifestScanResponse,
@@ -20,6 +24,7 @@ from aegis.schemas.dependencies import (
 from aegis.security.attack_surface import AttackSurfaceMapper
 from aegis.security.dependency_files import parse_dependency_file
 from aegis.security.osv import OsvDependencyScanner
+from aegis.security.threat_model import ThreatModeler
 
 
 settings = get_settings()
@@ -32,6 +37,9 @@ app = FastAPI(
 
 analyzer = SecurityAnalyzer()
 attack_surface_mapper = AttackSurfaceMapper()
+threat_modeler = ThreatModeler(
+    mapper=attack_surface_mapper,
+)
 dependency_scanner = OsvDependencyScanner()
 
 
@@ -111,6 +119,31 @@ async def scan_attack_surface(
             status_code=502,
             detail=(
                 "Attack-surface mapping failed: "
+                f"{exc}"
+            ),
+        ) from exc
+
+
+@app.post(
+    "/v1/threat-model/scan",
+    response_model=ThreatModelScanResponse,
+)
+async def scan_threat_model(
+    request: ThreatModelScanRequest,
+) -> ThreatModelScanResponse:
+    """
+    Build a deterministic threat model from the
+    workspace attack surface.
+    """
+    try:
+        return threat_modeler.scan(
+            request.files
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Threat modeling failed: "
                 f"{exc}"
             ),
         ) from exc
