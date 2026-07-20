@@ -191,18 +191,22 @@ def test_invalid_package_lock_raises(
 
 
 def test_supported_dependency_files() -> None:
-    assert supported_dependency_file(
-        "requirements.txt"
-    )
-    assert supported_dependency_file(
-        "requirements-dev.txt"
-    )
-    assert supported_dependency_file(
-        "package-lock.json"
-    )
+    for filename in (
+        "requirements.txt",
+        "requirements-dev.txt",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "poetry.lock",
+        "Pipfile.lock",
+        "Cargo.lock",
+    ):
+        assert supported_dependency_file(
+            filename
+        )
 
     assert not supported_dependency_file(
-        "poetry.lock"
+        "Gemfile.lock"
     )
 
 
@@ -211,5 +215,223 @@ def test_unsupported_file_raises() -> None:
         UnsupportedDependencyFileError
     ):
         parse_dependency_file(
-            "Cargo.lock"
+            "Gemfile.lock"
+        )
+
+
+def test_parse_pipfile_lock(
+    tmp_path: Path,
+) -> None:
+    lockfile = tmp_path / "Pipfile.lock"
+
+    lockfile.write_text(
+        json.dumps(
+            {
+                "_meta": {
+                    "pipfile-spec": 6,
+                },
+                "default": {
+                    "requests": {
+                        "version": "==2.32.3",
+                    },
+                    "local-package": {
+                        "path": ".",
+                        "version": "==1.0.0",
+                    },
+                },
+                "develop": {
+                    "pytest": {
+                        "version": "==8.3.3",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    packages = parse_dependency_file(
+        lockfile
+    )
+
+    assert [
+        (
+            package.name,
+            package.version,
+            package.ecosystem,
+        )
+        for package in packages
+    ] == [
+        ("pytest", "8.3.3", "PyPI"),
+        ("requests", "2.32.3", "PyPI"),
+    ]
+
+
+def test_parse_poetry_lock(
+    tmp_path: Path,
+) -> None:
+    lockfile = tmp_path / "poetry.lock"
+
+    lockfile.write_text(
+        """
+[[package]]
+name = "requests"
+version = "2.32.3"
+description = ""
+optional = false
+python-versions = ">=3.9"
+
+[[package]]
+name = "local-package"
+version = "1.0.0"
+
+[package.source]
+type = "directory"
+url = "../local-package"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    packages = parse_dependency_file(
+        lockfile
+    )
+
+    assert [
+        (
+            package.name,
+            package.version,
+            package.ecosystem,
+        )
+        for package in packages
+    ] == [
+        ("requests", "2.32.3", "PyPI"),
+    ]
+
+
+def test_parse_cargo_lock(
+    tmp_path: Path,
+) -> None:
+    lockfile = tmp_path / "Cargo.lock"
+
+    lockfile.write_text(
+        """
+version = 4
+
+[[package]]
+name = "serde"
+version = "1.0.210"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "local-crate"
+version = "0.1.0"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    packages = parse_dependency_file(
+        lockfile
+    )
+
+    assert [
+        (
+            package.name,
+            package.version,
+            package.ecosystem,
+        )
+        for package in packages
+    ] == [
+        ("local-crate", "0.1.0", "crates.io"),
+        ("serde", "1.0.210", "crates.io"),
+    ]
+
+
+def test_parse_pnpm_lock(
+    tmp_path: Path,
+) -> None:
+    lockfile = tmp_path / "pnpm-lock.yaml"
+
+    lockfile.write_text(
+        """
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      express:
+        specifier: ^4.21.0
+        version: 4.21.0
+
+packages:
+  express@4.21.0:
+    resolution:
+      integrity: sha512-example
+
+  debug@2.6.9:
+    resolution:
+      integrity: sha512-example
+""".strip(),
+        encoding="utf-8",
+    )
+
+    packages = parse_dependency_file(
+        lockfile
+    )
+
+    by_name = {
+        package.name: package
+        for package in packages
+    }
+
+    assert by_name["express"].version == "4.21.0"
+    assert by_name["express"].direct is True
+    assert by_name["debug"].direct is False
+
+
+def test_parse_yarn_classic_lock(
+    tmp_path: Path,
+) -> None:
+    lockfile = tmp_path / "yarn.lock"
+
+    lockfile.write_text(
+        """
+# yarn lockfile v1
+
+express@^4.21.0:
+  version "4.21.0"
+  resolved "https://registry.yarnpkg.com/express/-/express-4.21.0.tgz"
+
+"@scope/tool@^2.0.0":
+  version "2.0.1"
+  resolved "https://registry.yarnpkg.com/@scope/tool/-/tool-2.0.1.tgz"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    packages = parse_dependency_file(
+        lockfile
+    )
+
+    assert [
+        (
+            package.name,
+            package.version,
+            package.ecosystem,
+        )
+        for package in packages
+    ] == [
+        ("@scope/tool", "2.0.1", "npm"),
+        ("express", "4.21.0", "npm"),
+    ]
+
+
+def test_all_new_lockfiles_are_supported() -> None:
+    for filename in (
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "poetry.lock",
+        "Pipfile.lock",
+        "Cargo.lock",
+    ):
+        assert supported_dependency_file(
+            filename
         )
