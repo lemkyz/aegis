@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import * as path from "node:path";
+import { readdir, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 
@@ -2984,6 +2985,256 @@ function securityFindingIdentity(
   ].join("|");
 }
 
+const verificationRootMarkers = [
+  ".git",
+  "pyproject.toml",
+  "pytest.ini",
+  "setup.cfg",
+  "tox.ini",
+  "package.json",
+  "pnpm-workspace.yaml",
+  "yarn.lock",
+  "package-lock.json",
+];
+
+const ignoredVerificationDirectories =
+  new Set([
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    ".pytest_cache",
+    "__pycache__",
+  ]);
+
+async function resolveVerificationProjectRoot(
+  document: vscode.TextDocument,
+): Promise<string> {
+  const documentDirectory =
+    path.resolve(
+      path.dirname(document.fileName),
+    );
+
+  try {
+    const gitResult = await execFileAsync(
+      "git",
+      [
+        "-C",
+        documentDirectory,
+        "rev-parse",
+        "--show-toplevel",
+      ],
+      {
+        timeout: 10_000,
+        maxBuffer: 64 * 1024,
+      },
+    );
+
+    const gitRoot =
+      gitResult.stdout.trim();
+
+    if (gitRoot) {
+      return path.resolve(gitRoot);
+    }
+  } catch {
+    // The document may not belong to a Git repository.
+  }
+
+  let currentDirectory =
+    documentDirectory;
+
+  while (true) {
+    for (
+      const marker
+      of verificationRootMarkers
+    ) {
+      if (
+        await pathExists(
+          path.join(
+            currentDirectory,
+            marker,
+          ),
+        )
+      ) {
+        return currentDirectory;
+      }
+    }
+
+    const parentDirectory =
+      path.dirname(currentDirectory);
+
+    if (
+      parentDirectory === currentDirectory
+    ) {
+      break;
+    }
+
+    currentDirectory =
+      parentDirectory;
+  }
+
+  const workspaceFolder =
+    vscode.workspace.getWorkspaceFolder(
+      document.uri,
+    );
+
+  return (
+    workspaceFolder?.uri.fsPath ??
+    documentDirectory
+  );
+}
+
+async function pathExists(
+  filePath: string,
+): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function hasAnyProjectEntry(
+  projectRoot: string,
+  relativePaths: string[],
+): Promise<boolean> {
+  for (const relativePath of relativePaths) {
+    if (
+      await pathExists(
+        path.join(
+          projectRoot,
+          relativePath,
+        ),
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function resolvePythonTestScope(
+  projectRoot: string,
+  document: vscode.TextDocument,
+): Promise<string> {
+  const normalizedRoot =
+    path.resolve(projectRoot);
+
+  const normalizedFile =
+    path.resolve(document.fileName);
+
+  const relativeFile =
+    path.relative(
+      normalizedRoot,
+      normalizedFile,
+    );
+
+  if (
+    relativeFile.startsWith("..") ||
+    path.isAbsolute(relativeFile)
+  ) {
+    return path.dirname(normalizedFile);
+  }
+
+  const firstSegment =
+    relativeFile.split(path.sep)[0];
+
+  if (
+    !firstSegment ||
+    firstSegment === path.basename(normalizedFile)
+  ) {
+    return normalizedRoot;
+  }
+
+  const candidateScope =
+    path.join(
+      normalizedRoot,
+      firstSegment,
+    );
+
+  if (
+    await pathExists(candidateScope)
+  ) {
+    return candidateScope;
+  }
+
+  return normalizedRoot;
+}
+
+async function hasPythonTestFiles(
+  projectRoot: string,
+): Promise<boolean> {
+  return directoryContainsPythonTests(
+    projectRoot,
+    0,
+    6,
+  );
+}
+
+async function directoryContainsPythonTests(
+  directory: string,
+  depth: number,
+  maximumDepth: number,
+): Promise<boolean> {
+  if (depth > maximumDepth) {
+    return false;
+  }
+
+  let entries;
+
+  try {
+    entries = await readdir(
+      directory,
+      {
+        withFileTypes: true,
+      },
+    );
+  } catch {
+    return false;
+  }
+
+  for (const entry of entries) {
+    const name = entry.name;
+
+    if (
+      entry.isFile() &&
+      (
+        /^test_.*\.py$/i.test(name) ||
+        /_test\.py$/i.test(name)
+      )
+    ) {
+      return true;
+    }
+
+    if (
+      !entry.isDirectory() ||
+      ignoredVerificationDirectories.has(name)
+    ) {
+      continue;
+    }
+
+    if (
+      await directoryContainsPythonTests(
+        path.join(
+          directory,
+          name,
+        ),
+        depth + 1,
+        maximumDepth,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function verifyPatchedProject(
   document: vscode.TextDocument,
 ): Promise<ProjectVerificationSuite> {
@@ -3008,31 +3259,10 @@ async function verifyPatchedProject(
     };
   }
 
-  const workspaceFolder =
-    vscode.workspace.getWorkspaceFolder(
-      document.uri,
-    );
-
-  if (!workspaceFolder) {
-    return {
-      syntax,
-      tests: {
-        name: "Project tests",
-        status: "skipped",
-        details:
-          "No workspace folder was available for test discovery.",
-      },
-      build: {
-        name: "Build/typecheck",
-        status: "skipped",
-        details:
-          "No workspace folder was available for build discovery.",
-      },
-    };
-  }
-
   const workspacePath =
-    workspaceFolder.uri.fsPath;
+    await resolveVerificationProjectRoot(
+      document,
+    );
 
   const tests =
     await discoverAndRunProjectTests(
@@ -3083,22 +3313,43 @@ async function discoverAndRunProjectTests(
   );
 
   if (language === "python") {
-    const pytestFiles = await vscode.workspace.findFiles(
-      "**/{pytest.ini,pyproject.toml,setup.cfg,tox.ini}",
-      "**/{.git,.venv,venv,node_modules,dist,build}/**",
-      20,
-    );
+    const testScope =
+      await resolvePythonTestScope(
+        workspacePath,
+        document,
+      );
 
-    const testFiles = await vscode.workspace.findFiles(
-      "**/{test_*.py,*_test.py,tests/**/*.py}",
-      "**/{.git,.venv,venv,node_modules,dist,build}/**",
-      20,
-    );
+    const hasPytestConfiguration =
+      await hasAnyProjectEntry(
+        testScope,
+        [
+          "pytest.ini",
+          "pyproject.toml",
+          "setup.cfg",
+          "tox.ini",
+        ],
+      );
+
+    const hasPythonTests =
+      await hasPythonTestFiles(
+        testScope,
+      );
 
     if (
-      pytestFiles.length > 0 ||
-      testFiles.length > 0
+      hasPytestConfiguration ||
+      hasPythonTests
     ) {
+      const pythonPath = [
+        testScope,
+        workspacePath,
+        process.env.PYTHONPATH,
+      ]
+        .filter(
+          (value): value is string =>
+            Boolean(value),
+        )
+        .join(path.delimiter);
+
       return runVerificationCommand({
         name: "Python tests",
         command: "python3",
@@ -3106,8 +3357,13 @@ async function discoverAndRunProjectTests(
           "-m",
           "pytest",
           "-q",
+          testScope,
         ],
-        cwd: workspacePath,
+        cwd: testScope,
+        env: {
+          ...process.env,
+          PYTHONPATH: pythonPath,
+        },
         timeout: 120_000,
         missingToolMeansSkipped: true,
       });
@@ -3117,7 +3373,7 @@ async function discoverAndRunProjectTests(
       name: "Python tests",
       status: "skipped",
       details:
-        "No pytest configuration or Python test files were discovered.",
+        `No relevant Python tests were discovered under ${testScope}.`,
     };
   }
 
@@ -3188,14 +3444,15 @@ async function discoverAndRunProjectBuild(
   );
 
   if (language === "python") {
-    const pyprojectFiles =
-      await vscode.workspace.findFiles(
-        "**/pyproject.toml",
-        "**/{.git,.venv,venv,node_modules,dist,build}/**",
-        10,
+    const hasPyproject =
+      await pathExists(
+        path.join(
+          workspacePath,
+          "pyproject.toml",
+        ),
       );
 
-    if (pyprojectFiles.length === 0) {
+    if (!hasPyproject) {
       return {
         name: "Python build",
         status: "skipped",
@@ -3488,6 +3745,7 @@ interface VerificationCommandInput {
   args: string[];
   cwd: string;
   timeout: number;
+  env?: NodeJS.ProcessEnv;
   missingToolMeansSkipped?: boolean;
 }
 
@@ -3505,6 +3763,7 @@ async function runVerificationCommand(
       input.args,
       {
         cwd: input.cwd,
+        env: input.env ?? process.env,
         timeout: input.timeout,
         maxBuffer: 1024 * 1024,
       },

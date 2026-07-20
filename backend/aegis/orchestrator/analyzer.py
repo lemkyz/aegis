@@ -1,3 +1,4 @@
+import re
 from aegis.models.nvidia import NvidiaModelClient
 from aegis.security.config_secrets import ConfigSecretScanner
 from aegis.security.redaction import SecretRedactor
@@ -219,7 +220,11 @@ class SecurityAnalyzer:
             )
 
             findings = [
-                self._scanner_evidence_to_finding(evidence)
+                self._scanner_evidence_to_finding(
+                    evidence,
+                    source_code=request.code,
+                    allow_local_patch=True,
+                )
                 for evidence in safe_scanner_evidence
             ]
 
@@ -331,8 +336,117 @@ class SecurityAnalyzer:
         return "\n\n".join(sections)
 
     @staticmethod
+    def _build_local_scanner_patch(
+        *,
+        rule_id: str,
+        source_code: str,
+    ) -> str | None:
+        """
+        Produces a conservative patch only for a narrowly understood
+        Semgrep SQL-injection pattern.
+
+        Unsupported or ambiguous code returns None.
+        """
+
+        if (
+            rule_id
+            != "aegis.python.sql-injection.formatted-query"
+        ):
+            return None
+
+        assignment_pattern = re.compile(
+            r"""(?mx)
+            ^
+            (?P<indent>[ \t]*)
+            (?P<query>[A-Za-z_][A-Za-z0-9_]*)
+            \s*=\s*f
+            (?P<quote>["'])
+            (?P<before>[^\r\n]*?)
+            \{
+            (?P<parameter>[A-Za-z_][A-Za-z0-9_]*)
+            \}
+            (?P<after>[^\r\n]*?)
+            (?P=quote)
+            [ \t]*
+            $
+            """
+        )
+
+        assignment = assignment_pattern.search(
+            source_code
+        )
+
+        if assignment is None:
+            return None
+
+        query_name = assignment.group("query")
+        parameter_name = assignment.group("parameter")
+        quote = assignment.group("quote")
+
+        parameter_occurrences = len(
+            re.findall(
+                rf"\{{\s*{re.escape(parameter_name)}\s*\}}",
+                assignment.group(0),
+            )
+        )
+
+        if parameter_occurrences != 1:
+            return None
+
+        parameterized_sql = (
+            assignment.group("before")
+            + "?"
+            + assignment.group("after")
+        )
+
+        secure_assignment = (
+            f"{assignment.group('indent')}"
+            f"{query_name} = "
+            f"{quote}{parameterized_sql}{quote}"
+        )
+
+        patched_code = (
+            source_code[:assignment.start()]
+            + secure_assignment
+            + source_code[assignment.end():]
+        )
+
+        execute_pattern = re.compile(
+            rf"""(?x)
+            (?P<prefix>
+                \.execute
+                \(
+                \s*
+                {re.escape(query_name)}
+                \s*
+            )
+            \)
+            """
+        )
+
+        patched_code, replacement_count = (
+            execute_pattern.subn(
+                rf"\g<prefix>, ({parameter_name},))",
+                patched_code,
+                count=1,
+            )
+        )
+
+        if replacement_count != 1:
+            return None
+
+        if patched_code == source_code:
+            return None
+
+        return patched_code
+
+    @classmethod
     def _scanner_evidence_to_finding(
+        cls,
         evidence: ScannerEvidence,
+        *,
+        source_code: str | None = None,
+        allow_local_patch: bool = False,
     ) -> SecurityFinding:
         severity_map = {
             "INFO": "info",
@@ -394,6 +508,29 @@ class SecurityAnalyzer:
             .title()
         )
 
+        proposed_patch: str | None = None
+
+        if allow_local_patch and source_code:
+            proposed_patch = (
+                cls._build_local_scanner_patch(
+                    rule_id=evidence.rule_id,
+                    source_code=source_code,
+                )
+            )
+
+            if proposed_patch:
+                recommended_fix = (
+                    "Replace SQL string interpolation with a "
+                    "parameterized query and pass values separately "
+                    "to the database driver."
+                )
+
+                additional_notes.append(
+                    "The AI review was unavailable, so Aegis produced "
+                    "a deterministic local patch from the verified "
+                    "Semgrep rule. Review the diff before applying it."
+                )
+
         return SecurityFinding(
             title=title,
             severity=severity,
@@ -424,5 +561,5 @@ class SecurityAnalyzer:
                 *additional_notes,
             ],
             recommended_fix=recommended_fix,
-            proposed_patch=None,
+            proposed_patch=proposed_patch,
         )
