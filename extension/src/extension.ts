@@ -291,6 +291,7 @@ let latestWorkspaceScan: WorkspaceScanSummary | undefined;
 let reportContentProvider:
   AegisReportContentProvider | undefined;
 let latestDependencyScan: DependencyScanResponse | undefined;
+let latestAttackSurface: AttackSurfaceScanResponse | undefined;
 let diagnosticCollection: vscode.DiagnosticCollection | undefined;
 let securityTreeProvider: AegisSecurityTreeProvider | undefined;
 
@@ -325,6 +326,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(
       "aegis.openDependencyManifest",
       openDependencyManifest,
+    );
+
+  const openAttackSurfaceNodeCommand =
+    vscode.commands.registerCommand(
+      "aegis.openAttackSurfaceNode",
+      openAttackSurfaceNode,
     );
 
   const refreshSecurityViewCommand =
@@ -415,6 +422,7 @@ export function activate(context: vscode.ExtensionContext): void {
     securityTreeView,
     openWorkspaceFindingCommand,
     openDependencyManifestCommand,
+    openAttackSurfaceNodeCommand,
     refreshSecurityViewCommand,
     fastScanCommand,
     fastScanCurrentFileCommand,
@@ -438,7 +446,10 @@ type SecurityTreeElement =
   | SecurityMessageTreeItem
   | DependencyRootTreeItem
   | DependencyPackageTreeItem
-  | DependencyVulnerabilityTreeItem;
+  | DependencyVulnerabilityTreeItem
+  | AttackSurfaceRootTreeItem
+  | AttackSurfaceGroupTreeItem
+  | AttackSurfaceNodeTreeItem;
 
 class AegisSecurityTreeProvider
   implements vscode.TreeDataProvider<SecurityTreeElement> {
@@ -503,6 +514,14 @@ class AegisSecurityTreeProvider
         );
       }
 
+      if (latestAttackSurface) {
+        items.push(
+          new AttackSurfaceRootTreeItem(
+            latestAttackSurface,
+          ),
+        );
+      }
+
       if (latestDependencyScan) {
         items.push(
           new DependencyRootTreeItem(
@@ -530,6 +549,25 @@ class AegisSecurityTreeProvider
             element.result,
             finding,
           ),
+      );
+    }
+
+    if (element instanceof AttackSurfaceRootTreeItem) {
+      return groupAttackSurfaceNodes(
+        element.result.nodes,
+      ).map(
+        ([kind, nodes]) =>
+          new AttackSurfaceGroupTreeItem(
+            kind,
+            nodes,
+          ),
+      );
+    }
+
+    if (element instanceof AttackSurfaceGroupTreeItem) {
+      return element.nodes.map(
+        (node) =>
+          new AttackSurfaceNodeTreeItem(node),
       );
     }
 
@@ -652,6 +690,122 @@ class SecurityFindingTreeItem extends vscode.TreeItem {
   }
 }
 
+class AttackSurfaceRootTreeItem
+  extends vscode.TreeItem {
+  constructor(
+    readonly result: AttackSurfaceScanResponse,
+  ) {
+    super(
+      "Attack Surface",
+      vscode.TreeItemCollapsibleState.Expanded,
+    );
+
+    this.description =
+      `${result.summary.nodes_found} node(s) · `
+      + `${result.summary.routes} route(s)`;
+
+    this.tooltip = new vscode.MarkdownString(
+      [
+        "**Aegis Attack Surface**",
+        "",
+        `- Files scanned: ${result.summary.files_scanned}`,
+        `- Nodes: ${result.summary.nodes_found}`,
+        `- Relationships: ${result.summary.edges_found}`,
+        `- Routes: ${result.summary.routes}`,
+        `- Unauthenticated routes: ${result.summary.unauthenticated_routes}`,
+      ].join("\n"),
+    );
+
+    this.contextValue =
+      "aegisAttackSurfaceRoot";
+
+    this.iconPath =
+      new vscode.ThemeIcon("target");
+  }
+}
+
+class AttackSurfaceGroupTreeItem
+  extends vscode.TreeItem {
+  constructor(
+    readonly kind: AttackSurfaceNodeKind,
+    readonly nodes: AttackSurfaceNode[],
+  ) {
+    super(
+      formatAttackSurfaceKind(kind),
+      vscode.TreeItemCollapsibleState.Collapsed,
+    );
+
+    const strongest =
+      strongestAttackSurfaceRisk(nodes);
+
+    this.description =
+      `${nodes.length} · ${strongest.toUpperCase()}`;
+
+    this.tooltip =
+      `${nodes.length} `
+      + `${formatAttackSurfaceKind(kind)} node(s)`;
+
+    this.contextValue =
+      "aegisAttackSurfaceGroup";
+
+    this.iconPath =
+      attackSurfaceKindIcon(kind);
+  }
+}
+
+class AttackSurfaceNodeTreeItem
+  extends vscode.TreeItem {
+  constructor(
+    readonly node: AttackSurfaceNode,
+  ) {
+    super(
+      node.label,
+      vscode.TreeItemCollapsibleState.None,
+    );
+
+    this.description =
+      `${node.risk.toUpperCase()} · `
+      + `${node.file}:${node.line_start}`;
+
+    const authentication =
+      node.authenticated === null
+        ? "Unknown"
+        : node.authenticated
+          ? "Detected"
+          : "Not detected";
+
+    this.tooltip = new vscode.MarkdownString(
+      [
+        `**${node.label}**`,
+        "",
+        `- Type: ${formatAttackSurfaceKind(node.kind)}`,
+        `- Risk: ${node.risk.toUpperCase()}`,
+        `- File: ${node.file}`,
+        `- Line: ${node.line_start}`,
+        `- Framework: ${node.framework ?? "Unknown"}`,
+        `- Authentication: ${authentication}`,
+        "",
+        `\`${node.evidence.replaceAll("`", "\\`")}\``,
+      ].join("\n"),
+    );
+
+    this.contextValue =
+      "aegisAttackSurfaceNode";
+
+    this.iconPath =
+      attackSurfaceRiskIcon(node.risk);
+
+    this.command = {
+      command: "aegis.openAttackSurfaceNode",
+      title: "Open Attack Surface Node",
+      arguments: [
+        node.file,
+        node.line_start,
+      ],
+    };
+  }
+}
+
 class DependencyRootTreeItem extends vscode.TreeItem {
   constructor(
     readonly result: DependencyScanResponse,
@@ -762,6 +916,109 @@ class DependencyVulnerabilityTreeItem
       arguments: [vulnerability.manifest],
     };
   }
+}
+
+function groupAttackSurfaceNodes(
+  nodes: AttackSurfaceNode[],
+): Array<
+  [AttackSurfaceNodeKind, AttackSurfaceNode[]]
+> {
+  const order: AttackSurfaceNodeKind[] = [
+    "http_route",
+    "authentication",
+    "user_input",
+    "database",
+    "filesystem",
+    "outbound_request",
+    "process_execution",
+    "secret_access",
+  ];
+
+  const grouped = new Map<
+    AttackSurfaceNodeKind,
+    AttackSurfaceNode[]
+  >();
+
+  for (const node of nodes) {
+    const existing =
+      grouped.get(node.kind) ?? [];
+
+    existing.push(node);
+    grouped.set(node.kind, existing);
+  }
+
+  return order
+    .filter((kind) => grouped.has(kind))
+    .map((kind) => [
+      kind,
+      [...(grouped.get(kind) ?? [])].sort(
+        (left, right) =>
+          left.file.localeCompare(right.file)
+          || left.line_start - right.line_start,
+      ),
+    ]);
+}
+
+function strongestAttackSurfaceRisk(
+  nodes: AttackSurfaceNode[],
+): AttackSurfaceRisk {
+  const rank: Record<AttackSurfaceRisk, number> = {
+    info: 0,
+    low: 1,
+    medium: 2,
+    high: 3,
+    critical: 4,
+  };
+
+  return nodes.reduce<AttackSurfaceRisk>(
+    (strongest, node) =>
+      rank[node.risk] > rank[strongest]
+        ? node.risk
+        : strongest,
+    "info",
+  );
+}
+
+function attackSurfaceRiskIcon(
+  risk: AttackSurfaceRisk,
+): vscode.ThemeIcon {
+  switch (risk) {
+    case "critical":
+    case "high":
+      return new vscode.ThemeIcon("error");
+
+    case "medium":
+      return new vscode.ThemeIcon("warning");
+
+    case "low":
+      return new vscode.ThemeIcon("info");
+
+    case "info":
+    default:
+      return new vscode.ThemeIcon(
+        "circle-outline",
+      );
+  }
+}
+
+function attackSurfaceKindIcon(
+  kind: AttackSurfaceNodeKind,
+): vscode.ThemeIcon {
+  const icons:
+    Record<AttackSurfaceNodeKind, string> = {
+      http_route: "globe",
+      authentication: "lock",
+      user_input: "account",
+      database: "database",
+      filesystem: "files",
+      outbound_request: "remote",
+      process_execution: "terminal",
+      secret_access: "key",
+    };
+
+  return new vscode.ThemeIcon(
+    icons[kind],
+  );
 }
 
 function groupDependencyVulnerabilities(
@@ -943,6 +1200,48 @@ function getWorkspaceRisk(
   }
 
   return "none";
+}
+
+async function openAttackSurfaceNode(
+  relativePath: string,
+  oneBasedLine: number,
+): Promise<void> {
+  const workspaceFolders =
+    vscode.workspace.workspaceFolders;
+
+  if (
+    !workspaceFolders
+    || workspaceFolders.length === 0
+  ) {
+    void vscode.window.showWarningMessage(
+      "Aegis: No workspace is open.",
+    );
+    return;
+  }
+
+  for (const folder of workspaceFolders) {
+    const candidate = vscode.Uri.joinPath(
+      folder.uri,
+      relativePath,
+    );
+
+    try {
+      await vscode.workspace.fs.stat(candidate);
+
+      await openWorkspaceFinding(
+        candidate,
+        oneBasedLine,
+      );
+
+      return;
+    } catch {
+      // Try the next workspace folder.
+    }
+  }
+
+  void vscode.window.showErrorMessage(
+    `Aegis: Could not locate ${relativePath}.`,
+  );
 }
 
 async function openWorkspaceFinding(
@@ -2388,6 +2687,9 @@ async function mapWorkspaceAttackSurface():
       );
       return;
     }
+
+    latestAttackSurface = result;
+    securityTreeProvider?.refresh();
 
     await showReusableAegisReport(
       "attack-surface",
@@ -4831,6 +5133,7 @@ export function deactivate(): void {
   reportContentProvider = undefined;
   securityTreeProvider = undefined;
   latestDependencyScan = undefined;
+  latestAttackSurface = undefined;
   latestWorkspaceScan = undefined;
   lastAnalysis = undefined;
 }
