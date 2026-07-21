@@ -18,6 +18,8 @@ from aegis.schemas.validation import (
     ValidationAuthorizationRequest,
     ValidationAuthorizationResponse,
     ValidationExecutionPlanResponse,
+    DynamicValidationEvidenceRequest,
+    DynamicValidationEvidenceResponse,
     ValidationExecutionRequest,
     ValidationExecutionResult,
     ValidationPlanRequest,
@@ -42,6 +44,9 @@ from aegis.security.validation_plan import (
 from aegis.security.validation_runner import (
     ValidationRunner,
 )
+from aegis.security.validation_evidence import (
+    DynamicValidationEvaluator,
+)
 
 
 settings = get_settings()
@@ -64,6 +69,9 @@ validation_plan_builder = ValidationPlanBuilder(
 )
 validation_runner = ValidationRunner(
     planner=validation_plan_builder,
+)
+dynamic_validation_evaluator = (
+    DynamicValidationEvaluator()
 )
 
 
@@ -245,6 +253,31 @@ async def run_validation(
             detail=(
                 "Validation execution failed: "
                 f"{exc}"
+            ),
+        ) from exc
+
+
+@app.post(
+    "/v1/validation/evidence",
+    response_model=DynamicValidationEvidenceResponse,
+)
+async def evaluate_validation_evidence(
+    request: DynamicValidationEvidenceRequest,
+) -> DynamicValidationEvidenceResponse:
+    """
+    Correlate isolated execution evidence with a
+    specific authorized threat validation.
+    """
+    try:
+        return dynamic_validation_evaluator.evaluate(
+            request
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Dynamic validation evidence "
+                f"evaluation failed: {exc}"
             ),
         ) from exc
 

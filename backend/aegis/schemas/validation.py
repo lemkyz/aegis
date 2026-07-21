@@ -200,3 +200,68 @@ class ValidationExecutionResult(BaseModel):
     denials: list[str] = Field(
         default_factory=list,
     )
+
+
+DynamicValidationVerdict = Literal[
+    "confirmed",
+    "not_reproduced",
+    "blocked",
+    "execution_error",
+    "timed_out",
+]
+
+
+class ValidationSuccessCriteria(BaseModel):
+    expected_exit_code: int = Field(
+        default=0,
+        ge=0,
+        le=255,
+    )
+    stdout_contains: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1_000,
+    )
+    stderr_contains: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1_000,
+    )
+
+
+class DynamicValidationEvidenceRequest(BaseModel):
+    threat_id: str = Field(
+        min_length=1,
+        max_length=300,
+    )
+    category: ValidationTestType
+
+    execution: ValidationExecutionResult
+    success_criteria: ValidationSuccessCriteria
+
+
+class DynamicValidationEvidenceResponse(BaseModel):
+    evaluator: str
+
+    threat_id: str
+    category: ValidationTestType
+    verdict: DynamicValidationVerdict
+
+    dynamically_confirmed: bool
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    evidence: list[str] = Field(
+        default_factory=list,
+    )
+    reasons: list[str] = Field(
+        default_factory=list,
+    )
+
+    execution_status: ValidationRunStatus
+    exit_code: int | None = None
+    duration_ms: int = Field(
+        ge=0,
+    )
