@@ -785,3 +785,79 @@ def fetch(request):
         edge.relationship == "data_flow"
         for edge in result.attack_surface_edges
     )
+
+
+def test_threat_contains_complete_data_flow_path() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="ssrf.py",
+            language="python",
+            code="""
+import requests
+
+
+def fetch(request):
+    raw_url = request.args.get("url")
+    target = raw_url.strip()
+    return requests.get(target)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "ssrf"
+    )
+
+    assert threat.data_flow == [
+        'request.args.get("url")',
+        "raw_url",
+        "target",
+        "return requests.get(target)",
+    ]
+
+    assert len(threat.source_node_ids) >= 2
+
+    flow_edges = [
+        edge
+        for edge in result.attack_surface_edges
+        if edge.relationship == "data_flow"
+        and edge.target in threat.source_node_ids
+    ]
+
+    assert flow_edges
+    assert all(
+        edge.source in threat.source_node_ids
+        for edge in flow_edges
+    )
+
+
+def test_threat_without_graph_proof_has_empty_data_flow() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="network.py",
+            language="python",
+            code="""
+import requests
+
+
+def fetch(request):
+    ignored = request.args.get("url")
+    target = "https://api.example.com"
+    return requests.get(target)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "ssrf"
+    )
+
+    assert threat.data_flow == []

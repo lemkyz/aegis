@@ -342,6 +342,7 @@ interface ThreatFinding {
   mitigations: string[];
   evidence: string[];
   source_node_ids: string[];
+  data_flow: string[];
   exploitability: Exploitability;
   exploitability_confidence: number;
   exploitability_reasons: string[];
@@ -918,6 +919,11 @@ class ThreatFindingTreeItem
         ...formatMarkdownBulletLines(
           threat.exploitability_reasons,
           "No deterministic reason was recorded.",
+        ),
+        "",
+        "**Data flow:**",
+        ...formatDataFlowLines(
+          threat.data_flow,
         ),
         "",
         "**Prerequisites:**",
@@ -2262,6 +2268,24 @@ function buildThreatModelReport(
 
       lines.push(
         "",
+        "#### Data Flow",
+        "",
+      );
+
+      if (threat.data_flow.length === 0) {
+        lines.push(
+          "- No proven source-to-sink flow.",
+        );
+      } else {
+        lines.push(
+          "```text",
+          threat.data_flow.join("\n→ "),
+          "```",
+        );
+      }
+
+      lines.push(
+        "",
         "#### Prerequisites",
         "",
       );
@@ -2378,6 +2402,23 @@ function formatExploitability(
   };
 
   return labels[exploitability];
+}
+
+
+function formatDataFlowLines(
+  dataFlow: string[],
+): string[] {
+  if (dataFlow.length === 0) {
+    return [
+      "- No proven source-to-sink flow.",
+    ];
+  }
+
+  return [
+    "```text",
+    dataFlow.join("\n→ "),
+    "```",
+  ];
 }
 
 

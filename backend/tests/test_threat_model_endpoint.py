@@ -92,6 +92,12 @@ def execute(request):
     assert threat["exploitability_reasons"]
     assert threat["prerequisites"]
     assert threat["blocking_controls"] == []
+    assert threat["data_flow"] == [
+        'request.args.get("command")',
+        "command",
+        "return os.system(command)",
+    ]
+    assert len(threat["source_node_ids"]) >= 2
 
 
 

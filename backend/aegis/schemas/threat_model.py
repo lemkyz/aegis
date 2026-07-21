@@ -104,6 +104,9 @@ class ThreatFinding(BaseModel):
     source_node_ids: list[str] = Field(
         default_factory=list,
     )
+    data_flow: list[str] = Field(
+        default_factory=list,
+    )
 
     exploitability: Exploitability = "unknown"
     exploitability_confidence: float = Field(

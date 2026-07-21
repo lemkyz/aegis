@@ -258,6 +258,7 @@ class ThreatModeler:
                         context=context,
                         nodes=nodes,
                         edges=edges,
+                        files_by_name=files_by_name,
                     )
                 )
 
@@ -855,6 +856,68 @@ class ThreatModeler:
 
         return parameters
 
+    @classmethod
+    def _build_data_flow_path(
+        cls,
+        *,
+        node: AttackSurfaceNode,
+        nodes: list[AttackSurfaceNode],
+        edges: list[AttackSurfaceEdge],
+        files_by_name: dict[str, AttackSurfaceFile],
+    ) -> tuple[list[str], list[str]]:
+        matching_edge = next(
+            (
+                edge
+                for edge in edges
+                if edge.target == node.id
+                and edge.relationship == "data_flow"
+            ),
+            None,
+        )
+
+        if matching_edge is None:
+            return [], []
+
+        source_node = next(
+            (
+                candidate
+                for candidate in nodes
+                if candidate.id == matching_edge.source
+            ),
+            None,
+        )
+
+        if source_node is None:
+            return [], []
+
+        source_file = files_by_name.get(node.file)
+
+        if source_file is None:
+            return [], []
+
+        source_expression = (
+            AttackSurfaceMapper._extract_source_expression(
+                source_node.evidence
+            )
+        )
+
+        if not source_expression:
+            return [], []
+
+        path = AttackSurfaceMapper._trace_local_data_flow(
+            code=source_file.code,
+            source_expression=source_expression,
+            sink_expression=node.evidence,
+        )
+
+        if not path:
+            return [], []
+
+        return path, [
+            source_node.id,
+            node.id,
+        ]
+
     @staticmethod
     def _has_proven_data_flow(
         *,
@@ -891,6 +954,7 @@ class ThreatModeler:
         context: str,
         nodes: list[AttackSurfaceNode],
         edges: list[AttackSurfaceEdge],
+        files_by_name: dict[str, AttackSurfaceFile],
     ) -> ThreatFinding:
         lowered = context.lower()
 
@@ -903,6 +967,15 @@ class ThreatModeler:
                 node=node,
                 edges=edges,
             )
+        )
+        (
+            data_flow,
+            data_flow_node_ids,
+        ) = self._build_data_flow_path(
+            node=node,
+            nodes=nodes,
+            edges=edges,
+            files_by_name=files_by_name,
         )
         has_direct_parameter_flow = (
             self._has_direct_parameter_flow(
@@ -1206,6 +1279,15 @@ class ThreatModeler:
                 "exploitability_reasons": reasons,
                 "prerequisites": prerequisites,
                 "blocking_controls": blocking_controls,
+                "data_flow": data_flow,
+                "source_node_ids": list(
+                    dict.fromkeys(
+                        [
+                            *threat.source_node_ids,
+                            *data_flow_node_ids,
+                        ]
+                    )
+                ),
             }
         )
 

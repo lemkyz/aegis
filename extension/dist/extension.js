@@ -301,6 +301,9 @@ class ThreatFindingTreeItem extends vscode.TreeItem {
             "**Exploitability reasons:**",
             ...formatMarkdownBulletLines(threat.exploitability_reasons, "No deterministic reason was recorded."),
             "",
+            "**Data flow:**",
+            ...formatDataFlowLines(threat.data_flow),
+            "",
             "**Prerequisites:**",
             ...formatMarkdownBulletLines(threat.prerequisites, "No prerequisite was identified."),
             "",
@@ -1061,6 +1064,13 @@ function buildThreatModelReport(result) {
                 lines.push(`- ${reason}`);
             }
         }
+        lines.push("", "#### Data Flow", "");
+        if (threat.data_flow.length === 0) {
+            lines.push("- No proven source-to-sink flow.");
+        }
+        else {
+            lines.push("```text", threat.data_flow.join("\n→ "), "```");
+        }
         lines.push("", "#### Prerequisites", "");
         if (threat.prerequisites.length === 0) {
             lines.push("- No prerequisite was identified.");
@@ -1119,6 +1129,18 @@ function formatExploitability(exploitability) {
         unknown: "UNKNOWN",
     };
     return labels[exploitability];
+}
+function formatDataFlowLines(dataFlow) {
+    if (dataFlow.length === 0) {
+        return [
+            "- No proven source-to-sink flow.",
+        ];
+    }
+    return [
+        "```text",
+        dataFlow.join("\n→ "),
+        "```",
+    ];
 }
 function formatMarkdownBulletLines(values, emptyMessage) {
     if (values.length === 0) {
