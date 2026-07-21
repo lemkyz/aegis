@@ -8,6 +8,7 @@ os.environ.setdefault(
 )
 
 from aegis.main import app
+from aegis.security.threat_model import ThreatModeler
 
 
 client = TestClient(app)
@@ -91,3 +92,74 @@ def execute(request):
     assert threat["exploitability_reasons"]
     assert threat["prerequisites"]
     assert threat["blocking_controls"] == []
+
+
+
+def test_threat_model_endpoint_returns_blocking_controls(
+    monkeypatch,
+) -> None:
+    detected_control = (
+        "Shell execution is explicitly disabled."
+    )
+
+    def fake_detect_blocking_controls(
+        *,
+        category: str,
+        context: str,
+        evidence: str = "",
+    ) -> list[str]:
+        if category != "command_injection":
+            return []
+
+        assert "os.system" in context
+        assert "os.system" in evidence
+
+        return [detected_control]
+
+    monkeypatch.setattr(
+        ThreatModeler,
+        "_detect_blocking_controls",
+        staticmethod(fake_detect_blocking_controls),
+    )
+
+    response = client.post(
+        "/v1/threat-model/scan",
+        json={
+            "files": [
+                {
+                    "filename": "app.py",
+                    "language": "python",
+                    "code": """
+import os
+
+
+def execute(request):
+    command = request.args.get("command")
+    return os.system(command)
+""".strip(),
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+
+    payload = response.json()
+    threat = next(
+        item
+        for item in payload["threats"]
+        if item["category"] == "command_injection"
+    )
+
+    assert threat["exploitability"] == "likely"
+    assert threat["exploitability_confidence"] >= 0.86
+    assert threat["blocking_controls"] == [
+        detected_control
+    ]
+    assert any(
+        "blocking controls were detected"
+        in reason.lower()
+        for reason in threat[
+            "exploitability_reasons"
+        ]
+    )
