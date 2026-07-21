@@ -71,10 +71,16 @@ def test_builds_hardened_podman_argv() -> None:
     assert argv[
         argv.index("--memory") + 1
     ] == "256m"
-    assert "--mount" in argv
-    assert "readonly" in argv[
-        argv.index("--mount") + 1
+    assert "--volume" in argv
+
+    volume = argv[
+        argv.index("--volume") + 1
     ]
+
+    assert volume == (
+        "/tmp/aegis-project:"
+        "/workspace:ro,Z"
+    )
     assert "sh" not in argv
     assert "bash" not in argv
     assert "-c" not in argv

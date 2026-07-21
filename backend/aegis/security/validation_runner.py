@@ -237,12 +237,10 @@ class ValidationRunner:
 
         argv.extend(
             [
-                "--mount",
+                "--volume",
                 (
-                    "type=bind,"
-                    f"src={mount.source},"
-                    f"dst={mount.target},"
-                    "readonly"
+                    f"{mount.source}:"
+                    f"{mount.target}:ro,Z"
                 ),
                 "--workdir",
                 "/workspace",
