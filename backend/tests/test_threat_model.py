@@ -891,12 +891,11 @@ export function loadFile(filename: string): string {
         if threat.category == "path_traversal"
     )
 
-    assert threat.data_flow
-    assert threat.data_flow[0] == "filename"
-    assert "fs.readFileSync" in threat.data_flow[-1]
-    assert 'path.join("/srv/uploads", filename)' in (
-        threat.data_flow[-1]
-    )
+    assert threat.data_flow == [
+        "filename",
+        'path.join("/srv/uploads", filename)',
+        "fs.readFileSync(...)",
+    ]
 
     sink = next(
         node

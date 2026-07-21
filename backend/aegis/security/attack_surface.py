@@ -716,6 +716,73 @@ class AttackSurfaceMapper:
         return expression in text
 
     @staticmethod
+    def _nested_tainted_flow_steps(
+        *,
+        sink_expression: str,
+        tainted_names: list[str],
+    ) -> list[str]:
+        nested_call_pattern = re.compile(
+            r"(?P<name>"
+            r"[A-Za-z_$][A-Za-z0-9_$]*"
+            r"(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+            r")\s*\("
+            r"(?P<arguments>[^()]*)"
+            r"\)"
+        )
+
+        outer_call = re.search(
+            r"(?:\breturn\s+)?"
+            r"(?P<name>"
+            r"[A-Za-z_$][A-Za-z0-9_$]*"
+            r"(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+            r")\s*\(",
+            sink_expression,
+        )
+
+        if outer_call is None:
+            return []
+
+        outer_name_start = outer_call.start("name")
+        steps: list[str] = []
+
+        for match in nested_call_pattern.finditer(
+            sink_expression
+        ):
+            # A single-layer sink such as requests.get(target)
+            # is the outer operation, not a nested transformation.
+            if match.start("name") == outer_name_start:
+                continue
+
+            call = match.group(0).strip()
+            arguments = match.group("arguments")
+
+            contains_tainted_name = any(
+                AttackSurfaceMapper._expression_occurs(
+                    name,
+                    arguments,
+                )
+                for name in tainted_names
+            )
+
+            if (
+                contains_tainted_name
+                and call not in steps
+            ):
+                steps.append(call)
+
+        if not steps:
+            return []
+
+        outer_step = (
+            f"{outer_call.group('name')}(...)"
+        )
+
+        return [
+            *steps,
+            outer_step,
+        ]
+
+    @staticmethod
     def _trace_local_data_flow(
         *,
         code: str,
@@ -844,10 +911,31 @@ class AttackSurfaceMapper:
         if not source_reaches_sink:
             return []
 
+        tainted_names = list(
+            dict.fromkeys(
+                [
+                    source_expression,
+                    *tainted_variables,
+                ]
+            )
+        )
+
+        nested_steps = (
+            AttackSurfaceMapper
+            ._nested_tainted_flow_steps(
+                sink_expression=sink_expression,
+                tainted_names=tainted_names,
+            )
+        )
+
         return [
             source_expression,
             *tainted_variables,
-            sink_expression,
+            *(
+                nested_steps
+                if nested_steps
+                else [sink_expression]
+            ),
         ]
 
     def _build_edges(

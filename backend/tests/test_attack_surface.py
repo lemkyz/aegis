@@ -500,3 +500,64 @@ export function loadFile(filename: string): string {
         and edge.relationship == "data_flow"
         for edge in result.edges
     )
+
+    flow = mapper._trace_local_data_flow(
+        code="""
+export function loadFile(filename: string): string {
+  return fs.readFileSync(
+    path.join("/srv/uploads", filename),
+    "utf8",
+  );
+}
+""".strip(),
+        source_expression="filename",
+        sink_expression=sink.evidence,
+        source_line=source.line_start,
+        sink_line=sink.line_start,
+    )
+
+    assert flow == [
+        "filename",
+        'path.join("/srv/uploads", filename)',
+        "fs.readFileSync(...)",
+    ]
+
+
+def test_extracts_nested_tainted_filesystem_step() -> None:
+    steps = (
+        AttackSurfaceMapper
+        ._nested_tainted_flow_steps(
+            sink_expression="""
+return fs.readFileSync(
+path.join("/srv/uploads", filename),
+"utf8",
+);
+""".strip(),
+            tainted_names=["filename"],
+        )
+    )
+
+    assert steps == [
+        'path.join("/srv/uploads", filename)',
+        "fs.readFileSync(...)",
+    ]
+
+
+def test_ignores_unrelated_nested_call() -> None:
+    steps = (
+        AttackSurfaceMapper
+        ._nested_tainted_flow_steps(
+            sink_expression="""
+return fs.readFileSync(
+path.join("/srv/uploads", safe_name),
+normalize(filename),
+);
+""".strip(),
+            tainted_names=["filename"],
+        )
+    )
+
+    assert steps == [
+        "normalize(filename)",
+        "fs.readFileSync(...)",
+    ]
