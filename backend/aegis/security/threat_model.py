@@ -1108,6 +1108,31 @@ class ThreatModeler:
                 "The attacker-controlled value reaches a security-sensitive operation."
             )
 
+        detected_controls = (
+            self._detect_blocking_controls(
+                category=threat.category,
+                context=context,
+            )
+        )
+
+        if detected_controls:
+            blocking_controls.extend(
+                detected_controls
+            )
+
+            (
+                exploitability,
+                exploitability_confidence,
+            ) = self._downgrade_for_blocking_controls(
+                exploitability=exploitability,
+                confidence=exploitability_confidence,
+            )
+
+            reasons.append(
+                "One or more blocking controls were detected "
+                "in the same static context."
+            )
+
         return threat.model_copy(
             update={
                 "exploitability": exploitability,
@@ -1118,6 +1143,153 @@ class ThreatModeler:
                 "blocking_controls": blocking_controls,
             }
         )
+
+    @staticmethod
+    def _detect_blocking_controls(
+        *,
+        category: str,
+        context: str,
+    ) -> list[str]:
+        lowered = context.lower()
+        controls: list[str] = []
+
+        if category == "command_injection":
+            argument_list = re.search(
+                r"(?:subprocess\.(?:run|popen|call|check_call|"
+                r"check_output)|spawn|execfile)"
+                r"\s*\(\s*\[",
+                lowered,
+            )
+
+            shell_disabled = any(
+                marker in lowered
+                for marker in (
+                    "shell=false",
+                    "shell: false",
+                )
+            )
+
+            if argument_list:
+                controls.append(
+                    "Process arguments are passed as a fixed "
+                    "argument list instead of a shell string."
+                )
+
+            if shell_disabled:
+                controls.append(
+                    "Shell execution is explicitly disabled."
+                )
+
+        elif category == "sql_injection":
+            parameterized_call = re.search(
+                r"\.(?:execute|query)\s*\(\s*"
+                r"(?:[rubf]*[\"'][\s\S]*?"
+                r"(?:\?|%s|:\w+|\$\d+)"
+                r"[\s\S]*?[\"'])"
+                r"\s*,\s*(?:\(|\[|\{)",
+                context,
+                flags=re.IGNORECASE,
+            )
+
+            if parameterized_call:
+                controls.append(
+                    "The database operation uses parameter "
+                    "binding instead of interpolating values "
+                    "into SQL."
+                )
+
+        elif category == "path_traversal":
+            canonicalization = any(
+                marker in lowered
+                for marker in (
+                    "os.path.realpath(",
+                    "os.path.abspath(",
+                    "path.resolve(",
+                    ".resolve()",
+                )
+            )
+
+            root_containment = any(
+                marker in lowered
+                for marker in (
+                    "os.path.commonpath(",
+                    ".startswith(",
+                    "path.relative(",
+                    "relative_to(",
+                    "is_relative_to(",
+                )
+            )
+
+            if canonicalization:
+                controls.append(
+                    "The filesystem path is canonicalized "
+                    "before sensitive use."
+                )
+
+            if root_containment:
+                controls.append(
+                    "The resolved path is checked against an "
+                    "allowed root directory."
+                )
+
+        elif category == "ssrf":
+            allowlist = any(
+                marker in lowered
+                for marker in (
+                    "allowed_hosts",
+                    "allowed_hosts",
+                    "allowed_domains",
+                    "allowed_urls",
+                    "host_allowlist",
+                    "url_allowlist",
+                    "hostname_allowlist",
+                    "if host not in",
+                    "if hostname not in",
+                    "includes(host)",
+                    "includes(hostname)",
+                )
+            )
+
+            parsed_destination = any(
+                marker in lowered
+                for marker in (
+                    "urlparse(",
+                    "new url(",
+                    ".hostname",
+                    ".host",
+                )
+            )
+
+            if allowlist:
+                controls.append(
+                    "The outbound destination is checked "
+                    "against an explicit allowlist."
+                )
+
+            if allowlist and parsed_destination:
+                controls.append(
+                    "The destination hostname is parsed before "
+                    "the allowlist decision."
+                )
+
+        return controls
+
+    @staticmethod
+    def _downgrade_for_blocking_controls(
+        *,
+        exploitability: str,
+        confidence: float,
+    ) -> tuple[str, float]:
+        if exploitability == "confirmed":
+            return "likely", max(confidence, 0.86)
+
+        if exploitability == "likely":
+            return "unlikely", max(confidence, 0.84)
+
+        if exploitability == "possible":
+            return "unlikely", max(confidence, 0.78)
+
+        return exploitability, confidence
 
     def _threat(
         self,

@@ -413,3 +413,142 @@ def ping_host(host):
 
     assert threat.exploitability == "confirmed"
     assert threat.exploitability_confidence >= 0.9
+
+
+def test_sql_parameter_binding_is_a_blocking_control() -> None:
+    controls = ThreatModeler._detect_blocking_controls(
+        category="sql_injection",
+        context="""
+def lookup(db, username):
+    return db.execute(
+        "SELECT * FROM users WHERE username = ?",
+        (username,),
+    )
+""".strip(),
+    )
+
+    assert controls
+    assert any(
+        "parameter binding" in control.lower()
+        for control in controls
+    )
+
+    exploitability, confidence = (
+        ThreatModeler._downgrade_for_blocking_controls(
+            exploitability="likely",
+            confidence=0.85,
+        )
+    )
+
+    assert exploitability == "unlikely"
+    assert confidence >= 0.84
+
+
+def test_path_root_containment_is_a_blocking_control() -> None:
+    controls = ThreatModeler._detect_blocking_controls(
+        category="path_traversal",
+        context="""
+import os
+
+
+BASE_DIR = "/srv/uploads"
+
+
+def read_file(filename):
+    candidate = os.path.realpath(
+        os.path.join(BASE_DIR, filename)
+    )
+    root = os.path.realpath(BASE_DIR) + os.sep
+
+    if not candidate.startswith(root):
+        raise ValueError("invalid path")
+
+    return open(candidate).read()
+""".strip(),
+    )
+
+    assert len(controls) >= 2
+    assert any(
+        "canonicalized" in control.lower()
+        for control in controls
+    )
+    assert any(
+        "allowed root" in control.lower()
+        for control in controls
+    )
+
+    exploitability, confidence = (
+        ThreatModeler._downgrade_for_blocking_controls(
+            exploitability="likely",
+            confidence=0.89,
+        )
+    )
+
+    assert exploitability == "unlikely"
+    assert confidence >= 0.84
+
+
+def test_ssrf_host_allowlist_is_a_blocking_control() -> None:
+    controls = ThreatModeler._detect_blocking_controls(
+        category="ssrf",
+        context="""
+from urllib.parse import urlparse
+
+
+ALLOWED_HOSTS = {"api.example.com"}
+
+
+def validate_target(target):
+    hostname = urlparse(target).hostname
+
+    if hostname not in ALLOWED_HOSTS:
+        raise ValueError("host not allowed")
+""".strip(),
+    )
+
+    assert len(controls) >= 2
+    assert any(
+        "allowlist" in control.lower()
+        for control in controls
+    )
+    assert any(
+        "hostname is parsed" in control.lower()
+        for control in controls
+    )
+
+    exploitability, confidence = (
+        ThreatModeler._downgrade_for_blocking_controls(
+            exploitability="likely",
+            confidence=0.91,
+        )
+    )
+
+    assert exploitability == "unlikely"
+    assert confidence >= 0.84
+
+
+def test_shell_false_argument_list_is_a_blocking_control() -> None:
+    controls = ThreatModeler._detect_blocking_controls(
+        category="command_injection",
+        context="""
+import subprocess
+
+
+def ping(host):
+    return subprocess.run(
+        ["ping", "-c", "1", host],
+        shell=False,
+        check=True,
+    )
+""".strip(),
+    )
+
+    assert len(controls) == 2
+    assert any(
+        "argument list" in control.lower()
+        for control in controls
+    )
+    assert any(
+        "disabled" in control.lower()
+        for control in controls
+    )
