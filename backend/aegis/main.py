@@ -18,6 +18,8 @@ from aegis.schemas.validation import (
     ValidationAuthorizationRequest,
     ValidationAuthorizationResponse,
     ValidationExecutionPlanResponse,
+    ValidationExecutionRequest,
+    ValidationExecutionResult,
     ValidationPlanRequest,
 )
 from aegis.schemas.dependencies import (
@@ -36,6 +38,9 @@ from aegis.security.authorization import (
 )
 from aegis.security.validation_plan import (
     ValidationPlanBuilder,
+)
+from aegis.security.validation_runner import (
+    ValidationRunner,
 )
 
 
@@ -56,6 +61,9 @@ dependency_scanner = OsvDependencyScanner()
 validation_authorizer = ValidationAuthorizer()
 validation_plan_builder = ValidationPlanBuilder(
     authorizer=validation_authorizer,
+)
+validation_runner = ValidationRunner(
+    planner=validation_plan_builder,
 )
 
 
@@ -211,6 +219,31 @@ async def plan_validation(
             status_code=502,
             detail=(
                 "Validation planning failed: "
+                f"{exc}"
+            ),
+        ) from exc
+
+
+@app.post(
+    "/v1/validation/run",
+    response_model=ValidationExecutionResult,
+)
+async def run_validation(
+    request: ValidationExecutionRequest,
+) -> ValidationExecutionResult:
+    """
+    Execute an explicitly authorized validation plan
+    inside a hardened local container runtime.
+    """
+    try:
+        return await validation_runner.run(
+            request
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Validation execution failed: "
                 f"{exc}"
             ),
         ) from exc
