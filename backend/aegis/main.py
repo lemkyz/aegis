@@ -22,6 +22,8 @@ from aegis.schemas.validation import (
     DynamicValidationEvidenceResponse,
     ValidationReplayCompareRequest,
     ValidationReplayCompareResponse,
+    UnifiedFixVerificationRequest,
+    UnifiedFixVerificationResponse,
     ValidationReplayRequest,
     ValidationReplayResponse,
     ValidationExecutionRequest,
@@ -56,6 +58,9 @@ from aegis.security.validation_replay import (
 )
 from aegis.security.validation_replay_orchestrator import (
     ValidationReplayOrchestrator,
+)
+from aegis.security.fix_verification import (
+    UnifiedFixVerificationEvaluator,
 )
 
 
@@ -92,6 +97,9 @@ validation_replay_orchestrator = (
         evaluator=dynamic_validation_evaluator,
         comparator=validation_replay_comparator,
     )
+)
+unified_fix_verification_evaluator = (
+    UnifiedFixVerificationEvaluator()
 )
 
 
@@ -347,6 +355,32 @@ async def replay_validation(
             status_code=502,
             detail=(
                 "Dynamic validation replay failed: "
+                f"{exc}"
+            ),
+        ) from exc
+
+
+@app.post(
+    "/v1/validation/fix-verification",
+    response_model=UnifiedFixVerificationResponse,
+)
+async def evaluate_fix_verification(
+    request: UnifiedFixVerificationRequest,
+) -> UnifiedFixVerificationResponse:
+    """
+    Combine project checks, static rescanning,
+    regression detection, and dynamic replay evidence.
+    """
+    try:
+        return (
+            unified_fix_verification_evaluator
+            .evaluate(request)
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Unified fix verification failed: "
                 f"{exc}"
             ),
         ) from exc

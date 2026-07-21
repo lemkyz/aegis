@@ -329,3 +329,71 @@ class ValidationReplayResponse(BaseModel):
     after_evidence: DynamicValidationEvidenceResponse
 
     comparison: ValidationReplayCompareResponse
+
+
+FixProjectCheckStatus = Literal[
+    "passed",
+    "failed",
+    "skipped",
+]
+
+FixVerificationVerdict = Literal[
+    "verified",
+    "project_failed",
+    "target_not_resolved",
+    "regression_detected",
+    "still_exploitable",
+    "inconclusive",
+]
+
+
+class FixProjectCheck(BaseModel):
+    name: str = Field(
+        min_length=1,
+        max_length=200,
+    )
+    status: FixProjectCheckStatus
+    details: str = Field(
+        default="",
+        max_length=5_000,
+    )
+
+
+class UnifiedFixVerificationRequest(BaseModel):
+    replay: ValidationReplayCompareResponse
+
+    project_checks: list[
+        FixProjectCheck
+    ] = Field(
+        min_length=1,
+        max_length=20,
+    )
+
+    static_target_resolved: bool
+    static_regression_free: bool
+
+
+class UnifiedFixVerificationResponse(BaseModel):
+    evaluator: str
+
+    threat_id: str
+    category: ValidationTestType
+
+    verdict: FixVerificationVerdict
+    verified: bool
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    project_checks_passed: bool
+    static_target_resolved: bool
+    static_regression_free: bool
+    dynamic_replay_fixed: bool
+
+    reasons: list[str] = Field(
+        default_factory=list,
+    )
+    failed_checks: list[str] = Field(
+        default_factory=list,
+    )
