@@ -2065,6 +2065,12 @@ async function applySecureFix() {
             fileName: document.fileName,
             status: "FAILED",
             projectVerification,
+            dynamicReplay: {
+                status: "not_run",
+                reasons: [
+                    "Dynamic replay was not attempted because project verification failed.",
+                ],
+            },
             rollbackStatus,
         });
         void vscode.window.showErrorMessage([
@@ -2114,22 +2120,30 @@ async function applySecureFix() {
     await showFixVerificationReport({
         fileName: document.fileName,
         status: targetResolved && regressionFree
-            ? "VERIFIED"
+            ? "PARTIAL"
             : "FAILED",
         projectVerification,
         targetResolved,
         regressionFree,
         securityDelta,
+        dynamicReplay: {
+            status: "not_run",
+            reasons: [
+                "No explicitly authorized dynamic baseline was available for replay.",
+            ],
+        },
     });
     if (targetResolved && regressionFree) {
         const existingMessage = securityDelta.unchangedFindings.length > 0
             ? `${securityDelta.unchangedFindings.length} unrelated pre-existing finding(s) remain.`
             : "No pre-existing findings remain.";
         void vscode.window.showInformationMessage([
-            "Aegis Fix Status: VERIFIED.",
+            "Aegis Fix Status: PARTIAL — available checks passed.",
             ...verificationMessages,
             "Target vulnerability: RESOLVED.",
             "Regression check: PASSED.",
+            "Dynamic replay: NOT RUN.",
+            "An authorized dynamic baseline is required for VERIFIED status.",
             existingMessage,
         ].join(" "));
         return;
@@ -2170,6 +2184,12 @@ function buildFixVerificationReport(input) {
         : input.regressionFree
             ? "PASSED"
             : "FAILED";
+    const dynamicReplayStatus = formatDynamicReplayStatus(input.dynamicReplay);
+    const unifiedVerdict = input.unifiedVerdict?.toUpperCase() ??
+        (input.dynamicReplay?.status === "not_run" ||
+            input.dynamicReplay === undefined
+            ? "NOT RUN"
+            : "INCONCLUSIVE");
     const remainingTargetFindings = input.securityDelta?.remainingTargetFindings ?? [];
     const introducedFindings = input.securityDelta?.introducedFindings ?? [];
     const unchangedFindings = input.securityDelta?.unchangedFindings ?? [];
@@ -2196,9 +2216,11 @@ function buildFixVerificationReport(input) {
         `- **Final Status:** ${input.status}`,
         `- **Target Vulnerability:** ${targetStatus}`,
         `- **Regression Check:** ${regressionStatus}`,
+        `- **Dynamic Replay:** ${dynamicReplayStatus}`,
+        `- **Unified Verdict:** ${unifiedVerdict}`,
         `- **Generated:** ${new Date().toISOString()}`,
         "",
-        "> VERIFIED means the configured syntax, project, and security checks completed without a detected failure. Skipped checks are shown explicitly.",
+        "> VERIFIED requires project checks, static verification, regression analysis, and a successful dynamic replay. PARTIAL means available checks passed but dynamic proof was not completed.",
         "",
         "## Project Verification",
         "",
@@ -2212,7 +2234,50 @@ function buildFixVerificationReport(input) {
         "",
         securitySections,
         "",
+        buildDynamicReplaySection(input.dynamicReplay),
+        "",
         rollbackSection,
+    ].join("\n");
+}
+function formatDynamicReplayStatus(replay) {
+    if (!replay || replay.status === "not_run") {
+        return "NOT RUN";
+    }
+    if (replay.status === "fixed") {
+        return "FIXED";
+    }
+    if (replay.status === "still_exploitable") {
+        return "STILL EXPLOITABLE";
+    }
+    return "INCONCLUSIVE";
+}
+function buildDynamicReplaySection(replay) {
+    if (!replay || replay.status === "not_run") {
+        return [
+            "## Dynamic Replay",
+            "",
+            "- **Status:** NOT RUN",
+            "",
+            "No explicitly authorized dynamic baseline was available. Static and project checks alone do not prove that the exploit path was closed.",
+        ].join("\n");
+    }
+    const confidence = replay.confidence === undefined
+        ? "Not reported"
+        : `${Math.round(replay.confidence * 100)}%`;
+    const reasons = replay.reasons.length > 0
+        ? replay.reasons.map((reason) => `- ${reason}`)
+        : ["- No additional reason was provided."];
+    return [
+        "## Dynamic Replay",
+        "",
+        `- **Status:** ${formatDynamicReplayStatus(replay)}`,
+        `- **Confidence:** ${confidence}`,
+        `- **Before Verdict:** ${replay.beforeVerdict ?? "Not reported"}`,
+        `- **After Verdict:** ${replay.afterVerdict ?? "Not reported"}`,
+        "",
+        "### Evidence Summary",
+        "",
+        ...reasons,
     ].join("\n");
 }
 function buildVerificationCheckSection(check) {

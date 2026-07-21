@@ -135,13 +135,29 @@ interface ProjectVerificationSuite {
   build: VerificationCheckResult;
 }
 
+type DynamicReplayReportStatus =
+  | "fixed"
+  | "still_exploitable"
+  | "inconclusive"
+  | "not_run";
+
+interface DynamicReplayReport {
+  status: DynamicReplayReportStatus;
+  confidence?: number;
+  beforeVerdict?: string;
+  afterVerdict?: string;
+  reasons: string[];
+}
+
 interface FixVerificationReportInput {
   fileName: string;
-  status: "VERIFIED" | "FAILED";
+  status: "VERIFIED" | "PARTIAL" | "FAILED";
   projectVerification: ProjectVerificationSuite;
   targetResolved?: boolean;
   regressionFree?: boolean;
   securityDelta?: SecurityVerificationDelta;
+  dynamicReplay?: DynamicReplayReport;
+  unifiedVerdict?: string;
   rollbackStatus?: string;
 }
 
@@ -4188,6 +4204,12 @@ async function applySecureFix(): Promise<void> {
       fileName: document.fileName,
       status: "FAILED",
       projectVerification,
+      dynamicReplay: {
+        status: "not_run",
+        reasons: [
+          "Dynamic replay was not attempted because project verification failed.",
+        ],
+      },
       rollbackStatus,
     });
 
@@ -4285,12 +4307,18 @@ async function applySecureFix(): Promise<void> {
     fileName: document.fileName,
     status:
       targetResolved && regressionFree
-        ? "VERIFIED"
+        ? "PARTIAL"
         : "FAILED",
     projectVerification,
     targetResolved,
     regressionFree,
     securityDelta,
+    dynamicReplay: {
+      status: "not_run",
+      reasons: [
+        "No explicitly authorized dynamic baseline was available for replay.",
+      ],
+    },
   });
 
   if (targetResolved && regressionFree) {
@@ -4301,10 +4329,12 @@ async function applySecureFix(): Promise<void> {
 
     void vscode.window.showInformationMessage(
       [
-        "Aegis Fix Status: VERIFIED.",
+        "Aegis Fix Status: PARTIAL — available checks passed.",
         ...verificationMessages,
         "Target vulnerability: RESOLVED.",
         "Regression check: PASSED.",
+        "Dynamic replay: NOT RUN.",
+        "An authorized dynamic baseline is required for VERIFIED status.",
         existingMessage,
       ].join(" "),
     );
@@ -4379,6 +4409,18 @@ function buildFixVerificationReport(
         ? "PASSED"
         : "FAILED";
 
+  const dynamicReplayStatus =
+    formatDynamicReplayStatus(
+      input.dynamicReplay,
+    );
+
+  const unifiedVerdict =
+    input.unifiedVerdict?.toUpperCase() ??
+    (input.dynamicReplay?.status === "not_run" ||
+    input.dynamicReplay === undefined
+      ? "NOT RUN"
+      : "INCONCLUSIVE");
+
   const remainingTargetFindings =
     input.securityDelta?.remainingTargetFindings ?? [];
 
@@ -4423,9 +4465,11 @@ function buildFixVerificationReport(
     `- **Final Status:** ${input.status}`,
     `- **Target Vulnerability:** ${targetStatus}`,
     `- **Regression Check:** ${regressionStatus}`,
+    `- **Dynamic Replay:** ${dynamicReplayStatus}`,
+    `- **Unified Verdict:** ${unifiedVerdict}`,
     `- **Generated:** ${new Date().toISOString()}`,
     "",
-    "> VERIFIED means the configured syntax, project, and security checks completed without a detected failure. Skipped checks are shown explicitly.",
+    "> VERIFIED requires project checks, static verification, regression analysis, and a successful dynamic replay. PARTIAL means available checks passed but dynamic proof was not completed.",
     "",
     "## Project Verification",
     "",
@@ -4439,7 +4483,68 @@ function buildFixVerificationReport(
     "",
     securitySections,
     "",
+    buildDynamicReplaySection(
+      input.dynamicReplay,
+    ),
+    "",
     rollbackSection,
+  ].join("\n");
+}
+
+function formatDynamicReplayStatus(
+  replay: DynamicReplayReport | undefined,
+): string {
+  if (!replay || replay.status === "not_run") {
+    return "NOT RUN";
+  }
+
+  if (replay.status === "fixed") {
+    return "FIXED";
+  }
+
+  if (replay.status === "still_exploitable") {
+    return "STILL EXPLOITABLE";
+  }
+
+  return "INCONCLUSIVE";
+}
+
+function buildDynamicReplaySection(
+  replay: DynamicReplayReport | undefined,
+): string {
+  if (!replay || replay.status === "not_run") {
+    return [
+      "## Dynamic Replay",
+      "",
+      "- **Status:** NOT RUN",
+      "",
+      "No explicitly authorized dynamic baseline was available. Static and project checks alone do not prove that the exploit path was closed.",
+    ].join("\n");
+  }
+
+  const confidence =
+    replay.confidence === undefined
+      ? "Not reported"
+      : `${Math.round(replay.confidence * 100)}%`;
+
+  const reasons =
+    replay.reasons.length > 0
+      ? replay.reasons.map(
+          (reason) => `- ${reason}`,
+        )
+      : ["- No additional reason was provided."];
+
+  return [
+    "## Dynamic Replay",
+    "",
+    `- **Status:** ${formatDynamicReplayStatus(replay)}`,
+    `- **Confidence:** ${confidence}`,
+    `- **Before Verdict:** ${replay.beforeVerdict ?? "Not reported"}`,
+    `- **After Verdict:** ${replay.afterVerdict ?? "Not reported"}`,
+    "",
+    "### Evidence Summary",
+    "",
+    ...reasons,
   ].join("\n");
 }
 
