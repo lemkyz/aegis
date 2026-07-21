@@ -7,6 +7,7 @@ AttackSurfaceNodeKind = Literal[
     "http_route",
     "authentication",
     "user_input",
+    "function_parameter",
     "database",
     "filesystem",
     "outbound_request",

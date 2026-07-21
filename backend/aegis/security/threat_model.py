@@ -865,30 +865,40 @@ class ThreatModeler:
         edges: list[AttackSurfaceEdge],
         files_by_name: dict[str, AttackSurfaceFile],
     ) -> tuple[list[str], list[str]]:
-        matching_edge = next(
-            (
-                edge
-                for edge in edges
-                if edge.target == node.id
-                and edge.relationship == "data_flow"
-            ),
-            None,
-        )
+        matching_edges = [
+            edge
+            for edge in edges
+            if edge.target == node.id
+            and edge.relationship == "data_flow"
+        ]
 
-        if matching_edge is None:
+        if not matching_edges:
             return [], []
 
-        source_node = next(
-            (
-                candidate
-                for candidate in nodes
-                if candidate.id == matching_edge.source
-            ),
-            None,
-        )
+        nodes_by_id = {
+            candidate.id: candidate
+            for candidate in nodes
+        }
 
-        if source_node is None:
+        matching_sources = [
+            nodes_by_id[edge.source]
+            for edge in matching_edges
+            if edge.source in nodes_by_id
+        ]
+
+        if not matching_sources:
             return [], []
+
+        source_node = min(
+            matching_sources,
+            key=lambda candidate: (
+                0
+                if candidate.kind == "user_input"
+                else 1,
+                candidate.line_start,
+                candidate.id,
+            ),
+        )
 
         source_file = files_by_name.get(node.file)
 
@@ -896,7 +906,9 @@ class ThreatModeler:
             return [], []
 
         source_expression = (
-            AttackSurfaceMapper._extract_source_expression(
+            source_node.symbol
+            if source_node.kind == "function_parameter"
+            else AttackSurfaceMapper._extract_source_expression(
                 source_node.evidence
             )
         )
@@ -908,15 +920,24 @@ class ThreatModeler:
             code=source_file.code,
             source_expression=source_expression,
             sink_expression=node.evidence,
+            source_line=source_node.line_start,
+            sink_line=node.line_start,
         )
 
         if not path:
             return [], []
 
-        return path, [
-            source_node.id,
-            node.id,
-        ]
+        return path, list(
+            dict.fromkeys(
+                [
+                    *(
+                        source.id
+                        for source in matching_sources
+                    ),
+                    node.id,
+                ]
+            )
+        )
 
     @staticmethod
     def _has_proven_data_flow(

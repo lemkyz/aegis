@@ -326,6 +326,15 @@ class AttackSurfaceMapper:
             lines,
             start=1,
         ):
+            nodes.extend(
+                self._function_parameter_nodes(
+                    file=file,
+                    line=line,
+                    line_number=line_number,
+                    language="python",
+                )
+            )
+
             route = self._python_route_pattern.search(
                 line
             )
@@ -429,6 +438,15 @@ class AttackSurfaceMapper:
             lines,
             start=1,
         ):
+            nodes.extend(
+                self._function_parameter_nodes(
+                    file=file,
+                    line=line,
+                    line_number=line_number,
+                    language="javascript",
+                )
+            )
+
             route = self._express_route_pattern.search(
                 line
             )
@@ -470,6 +488,73 @@ class AttackSurfaceMapper:
                     line=line,
                     line_number=line_number,
                     patterns=self._javascript_patterns,
+                )
+            )
+
+        return nodes
+
+    def _function_parameter_nodes(
+        self,
+        *,
+        file: AttackSurfaceFile,
+        line: str,
+        line_number: int,
+        language: str,
+    ) -> list[AttackSurfaceNode]:
+        if language == "python":
+            declaration = re.match(
+                r"^\s*(?:async\s+)?def\s+"
+                r"[A-Za-z_]\w*\s*\((?P<parameters>[^)]*)\)",
+                line,
+            )
+            framework = "python"
+        else:
+            declaration = re.match(
+                r"^\s*(?:export\s+)?(?:async\s+)?"
+                r"function\s+"
+                r"[A-Za-z_$][A-Za-z0-9_$]*"
+                r"\s*\((?P<parameters>[^)]*)\)",
+                line,
+            )
+            framework = "nodejs"
+
+        if declaration is None:
+            return []
+
+        nodes: list[AttackSurfaceNode] = []
+
+        for raw_parameter in declaration.group(
+            "parameters"
+        ).split(","):
+            parameter = raw_parameter.strip()
+
+            if not parameter:
+                continue
+
+            parameter = parameter.split("=", 1)[0]
+            parameter = parameter.split(":", 1)[0]
+            parameter = parameter.lstrip("*").strip()
+
+            match = re.fullmatch(
+                r"[A-Za-z_$][A-Za-z0-9_$]*",
+                parameter,
+            )
+
+            if match is None:
+                continue
+
+            symbol = match.group(0)
+
+            nodes.append(
+                self._node(
+                    kind="function_parameter",
+                    label=f"Function parameter: {symbol}",
+                    file=file.filename,
+                    line=line_number,
+                    evidence=line.strip(),
+                    framework=framework,
+                    risk="medium",
+                    symbol=symbol,
                 )
             )
 
@@ -531,21 +616,55 @@ class AttackSurfaceMapper:
         )
 
     @staticmethod
+    def _expression_occurs(
+        expression: str,
+        text: str,
+    ) -> bool:
+        if re.fullmatch(
+            r"[A-Za-z_$][A-Za-z0-9_$]*",
+            expression,
+        ):
+            return (
+                re.search(
+                    rf"(?<![A-Za-z0-9_$])"
+                    rf"{re.escape(expression)}"
+                    rf"(?![A-Za-z0-9_$])",
+                    text,
+                )
+                is not None
+            )
+
+        return expression in text
+
+    @staticmethod
     def _trace_local_data_flow(
         *,
         code: str,
         source_expression: str,
         sink_expression: str,
+        source_line: int | None = None,
+        sink_line: int | None = None,
     ) -> list[str]:
         lines = code.splitlines()
 
-        source_index: int | None = None
-        sink_index: int | None = None
+        source_index: int | None = (
+            source_line - 1
+            if source_line is not None
+            else None
+        )
+        sink_index: int | None = (
+            sink_line - 1
+            if sink_line is not None
+            else None
+        )
 
         for index, line in enumerate(lines):
             if (
                 source_index is None
-                and source_expression in line
+                and AttackSurfaceMapper._expression_occurs(
+                    source_expression,
+                    line,
+                )
             ):
                 source_index = index
 
@@ -559,6 +678,24 @@ class AttackSurfaceMapper:
             source_index is None
             or sink_index is None
             or source_index > sink_index
+            or source_index >= len(lines)
+            or sink_index >= len(lines)
+        ):
+            return []
+
+        function_declaration = re.compile(
+            r"^\s*(?:export\s+)?(?:async\s+)?"
+            r"(?:def|function)\s+"
+            r"[A-Za-z_$][A-Za-z0-9_$]*"
+            r"\s*\("
+        )
+
+        if any(
+            function_declaration.match(lines[index])
+            for index in range(
+                source_index + 1,
+                sink_index + 1,
+            )
         ):
             return []
 
@@ -587,7 +724,10 @@ class AttackSurfaceMapper:
             value = assignment.group("value")
 
             receives_source = (
-                source_expression in value
+                AttackSurfaceMapper._expression_occurs(
+                    source_expression,
+                    value,
+                )
             )
             receives_tainted_value = any(
                 re.search(
@@ -608,7 +748,10 @@ class AttackSurfaceMapper:
         sink_line = lines[sink_index]
 
         source_reaches_sink = (
-            source_expression in sink_line
+            AttackSurfaceMapper._expression_occurs(
+                source_expression,
+                sink_line,
+            )
             or any(
                 re.search(
                     rf"\b{re.escape(variable)}\b",
@@ -680,7 +823,10 @@ class AttackSurfaceMapper:
         source_nodes = [
             node
             for node in nodes
-            if node.kind == "user_input"
+            if node.kind in {
+                "user_input",
+                "function_parameter",
+            }
         ]
 
         sink_kinds = {
@@ -703,7 +849,9 @@ class AttackSurfaceMapper:
                 continue
 
             source_expression = (
-                self._extract_source_expression(
+                source.symbol
+                if source.kind == "function_parameter"
+                else self._extract_source_expression(
                     source.evidence
                 )
             )
@@ -723,6 +871,8 @@ class AttackSurfaceMapper:
                     code=code,
                     source_expression=source_expression,
                     sink_expression=sink.evidence,
+                    source_line=source.line_start,
+                    sink_line=sink.line_start,
                 )
 
                 if not flow:
@@ -831,6 +981,7 @@ class AttackSurfaceMapper:
         evidence: str,
         risk: str,
         framework: str | None = None,
+        symbol: str | None = None,
         method: str | None = None,
         path: str | None = None,
         authenticated: bool | None = None,
@@ -852,6 +1003,7 @@ class AttackSurfaceMapper:
             file=file,
             line_start=line,
             line_end=line,
+            symbol=symbol,
             framework=framework,
             method=method,
             path=path,

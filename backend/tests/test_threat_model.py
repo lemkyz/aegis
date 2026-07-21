@@ -236,7 +236,7 @@ def execute(request):
     assert threat.blocking_controls == []
 
 
-def test_dynamic_sql_without_proven_input_is_likely() -> None:
+def test_dynamic_sql_parameter_flow_is_confirmed() -> None:
     files = [
         AttackSurfaceFile(
             filename="database.py",
@@ -257,9 +257,13 @@ def lookup(db, username):
         if threat.category == "sql_injection"
     )
 
-    assert threat.exploitability == "likely"
-    assert threat.exploitability_confidence >= 0.8
-    assert threat.exploitability_reasons
+    assert threat.exploitability == "confirmed"
+    assert threat.exploitability_confidence >= 0.9
+    assert any(
+        "source-to-sink data-flow edge proves"
+        in reason.lower()
+        for reason in threat.exploitability_reasons
+    )
     assert threat.prerequisites
 
 
@@ -381,8 +385,8 @@ function pingHost(input: string) {
     assert threat.exploitability == "confirmed"
     assert threat.exploitability_confidence >= 0.9
     assert any(
-        "Attacker-controlled input"
-        in reason
+        "source-to-sink data-flow edge proves"
+        in reason.lower()
         for reason in threat.exploitability_reasons
     )
 

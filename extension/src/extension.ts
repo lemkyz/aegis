@@ -223,6 +223,7 @@ type AttackSurfaceNodeKind =
   | "http_route"
   | "authentication"
   | "user_input"
+  | "function_parameter"
   | "database"
   | "filesystem"
   | "outbound_request"
@@ -1323,6 +1324,7 @@ function attackSurfaceKindIcon(
       http_route: "globe",
       authentication: "lock",
       user_input: "account",
+      function_parameter: "symbol-parameter",
       database: "database",
       filesystem: "files",
       outbound_request: "remote",
@@ -2591,6 +2593,7 @@ function formatAttackSurfaceKind(
       http_route: "HTTP Route",
       authentication: "Authentication Boundary",
       user_input: "User Input",
+      function_parameter: "Function Parameter",
       database: "Database",
       filesystem: "Filesystem",
       outbound_request: "Outbound Request",

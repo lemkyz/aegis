@@ -300,3 +300,155 @@ def fetch(request):
         edge.relationship == "data_flow"
         for edge in result.edges
     )
+
+
+def test_builds_python_parameter_to_process_edge() -> None:
+    mapper = AttackSurfaceMapper()
+
+    result = mapper.scan(
+        [
+            AttackSurfaceFile(
+                filename="command.py",
+                language="python",
+                code="""
+import os
+
+
+def ping_host(host):
+    command = f"ping -c 1 {host}"
+    return os.system(command)
+""".strip(),
+            )
+        ]
+    )
+
+    source = next(
+        node
+        for node in result.nodes
+        if node.kind == "function_parameter"
+        and node.symbol == "host"
+    )
+    sink = next(
+        node
+        for node in result.nodes
+        if node.kind == "process_execution"
+    )
+
+    edge = next(
+        edge
+        for edge in result.edges
+        if edge.source == source.id
+        and edge.target == sink.id
+        and edge.relationship == "data_flow"
+    )
+
+    assert edge.confidence >= 0.84
+
+
+def test_builds_javascript_parameter_to_sql_edge() -> None:
+    mapper = AttackSurfaceMapper()
+
+    result = mapper.scan(
+        [
+            AttackSurfaceFile(
+                filename="database.js",
+                language="javascript",
+                code="""
+function findUser(db, username) {
+  return db.query(`SELECT * FROM users WHERE username = '${username}'`);
+}
+""".strip(),
+            )
+        ]
+    )
+
+    source = next(
+        node
+        for node in result.nodes
+        if node.kind == "function_parameter"
+        and node.symbol == "username"
+    )
+    sink = next(
+        node
+        for node in result.nodes
+        if node.kind == "database"
+    )
+
+    assert any(
+        edge.source == source.id
+        and edge.target == sink.id
+        and edge.relationship == "data_flow"
+        for edge in result.edges
+    )
+
+
+def test_builds_typescript_parameter_to_process_edge() -> None:
+    mapper = AttackSurfaceMapper()
+
+    result = mapper.scan(
+        [
+            AttackSurfaceFile(
+                filename="command.ts",
+                language="typescript",
+                code="""
+export function runCommand(input: string): void {
+  exec(`ping -c 1 ${input}`);
+}
+""".strip(),
+            )
+        ]
+    )
+
+    source = next(
+        node
+        for node in result.nodes
+        if node.kind == "function_parameter"
+        and node.symbol == "input"
+    )
+    sink = next(
+        node
+        for node in result.nodes
+        if node.kind == "process_execution"
+    )
+
+    assert any(
+        edge.source == source.id
+        and edge.target == sink.id
+        and edge.relationship == "data_flow"
+        for edge in result.edges
+    )
+
+
+def test_parameter_flow_does_not_cross_functions() -> None:
+    mapper = AttackSurfaceMapper()
+
+    result = mapper.scan(
+        [
+            AttackSurfaceFile(
+                filename="separate.py",
+                language="python",
+                code="""
+import os
+
+
+def receive(command):
+    return command.strip()
+
+
+def execute():
+    command = "uptime"
+    return os.system(command)
+""".strip(),
+            )
+        ]
+    )
+
+    assert not any(
+        edge.relationship == "data_flow"
+        and any(
+            node.id == edge.source
+            and node.kind == "function_parameter"
+            for node in result.nodes
+        )
+        for edge in result.edges
+    )
