@@ -17,6 +17,8 @@ from aegis.schemas.threat_model import (
 from aegis.schemas.validation import (
     ValidationAuthorizationRequest,
     ValidationAuthorizationResponse,
+    ValidationExecutionPlanResponse,
+    ValidationPlanRequest,
 )
 from aegis.schemas.dependencies import (
     DependencyManifestScanRequest,
@@ -31,6 +33,9 @@ from aegis.security.osv import OsvDependencyScanner
 from aegis.security.threat_model import ThreatModeler
 from aegis.security.authorization import (
     ValidationAuthorizer,
+)
+from aegis.security.validation_plan import (
+    ValidationPlanBuilder,
 )
 
 
@@ -49,6 +54,9 @@ threat_modeler = ThreatModeler(
 )
 dependency_scanner = OsvDependencyScanner()
 validation_authorizer = ValidationAuthorizer()
+validation_plan_builder = ValidationPlanBuilder(
+    authorizer=validation_authorizer,
+)
 
 
 @app.get("/health")
@@ -178,6 +186,31 @@ async def authorize_validation(
             status_code=502,
             detail=(
                 "Validation authorization failed: "
+                f"{exc}"
+            ),
+        ) from exc
+
+
+@app.post(
+    "/v1/validation/plan",
+    response_model=ValidationExecutionPlanResponse,
+)
+async def plan_validation(
+    request: ValidationPlanRequest,
+) -> ValidationExecutionPlanResponse:
+    """
+    Build an inspectable isolated-execution plan.
+    This endpoint does not run Docker or any command.
+    """
+    try:
+        return validation_plan_builder.build(
+            request
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Validation planning failed: "
                 f"{exc}"
             ),
         ) from exc

@@ -94,3 +94,68 @@ class ValidationAuthorizationResponse(BaseModel):
     denials: list[str] = Field(
         default_factory=list,
     )
+
+
+ValidationRuntime = Literal[
+    "python",
+    "node",
+]
+
+
+class ValidationPlanRequest(BaseModel):
+    authorization: ValidationAuthorizationRequest
+
+    runtime: ValidationRuntime
+    entrypoint: str = Field(
+        min_length=1,
+        max_length=500,
+    )
+    test_type: ValidationTestType
+
+
+class ValidationSandboxPolicy(BaseModel):
+    read_only_root: bool
+    network: Literal[
+        "none",
+        "loopback",
+    ]
+    drop_capabilities: list[str]
+    no_new_privileges: bool
+    user: str
+    memory_limit_mb: int
+    cpu_limit: float
+    timeout_seconds: int
+    pids_limit: int
+    writable_tmpfs: list[str]
+
+
+class ValidationMount(BaseModel):
+    source: str
+    target: str
+    read_only: bool
+
+
+class ValidationExecutionPlanResponse(BaseModel):
+    planner: str
+
+    authorized: bool
+    execution_allowed: bool
+    ready: bool
+
+    runtime: ValidationRuntime
+    image: str | None = None
+    command: list[str] = Field(
+        default_factory=list,
+    )
+
+    sandbox: ValidationSandboxPolicy
+    mounts: list[ValidationMount] = Field(
+        default_factory=list,
+    )
+
+    reasons: list[str] = Field(
+        default_factory=list,
+    )
+    denials: list[str] = Field(
+        default_factory=list,
+    )
