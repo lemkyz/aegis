@@ -527,6 +527,104 @@ class AttackSurfaceMapper:
             auth_pattern.expression.search(context)
         )
 
+    @staticmethod
+    def _trace_local_data_flow(
+        *,
+        code: str,
+        source_expression: str,
+        sink_expression: str,
+    ) -> list[str]:
+        lines = code.splitlines()
+
+        source_index: int | None = None
+        sink_index: int | None = None
+
+        for index, line in enumerate(lines):
+            if (
+                source_index is None
+                and source_expression in line
+            ):
+                source_index = index
+
+            if (
+                sink_index is None
+                and sink_expression in line
+            ):
+                sink_index = index
+
+        if (
+            source_index is None
+            or sink_index is None
+            or source_index > sink_index
+        ):
+            return []
+
+        assignment_pattern = re.compile(
+            r"^\s*(?:(?:const|let|var)\s+)?"
+            r"(?P<target>[A-Za-z_$][A-Za-z0-9_$]*)"
+            r"(?:\s*:\s*[^=]+)?"
+            r"\s*=\s*"
+            r"(?P<value>.+?)"
+            r"\s*;?\s*$"
+        )
+
+        tainted_variables: list[str] = []
+
+        for index in range(
+            source_index,
+            sink_index + 1,
+        ):
+            line = lines[index]
+            assignment = assignment_pattern.match(line)
+
+            if assignment is None:
+                continue
+
+            target = assignment.group("target")
+            value = assignment.group("value")
+
+            receives_source = (
+                source_expression in value
+            )
+            receives_tainted_value = any(
+                re.search(
+                    rf"\b{re.escape(variable)}\b",
+                    value,
+                )
+                is not None
+                for variable in tainted_variables
+            )
+
+            if (
+                receives_source
+                or receives_tainted_value
+            ):
+                if target not in tainted_variables:
+                    tainted_variables.append(target)
+
+        sink_line = lines[sink_index]
+
+        source_reaches_sink = (
+            source_expression in sink_line
+            or any(
+                re.search(
+                    rf"\b{re.escape(variable)}\b",
+                    sink_line,
+                )
+                is not None
+                for variable in tainted_variables
+            )
+        )
+
+        if not source_reaches_sink:
+            return []
+
+        return [
+            source_expression,
+            *tainted_variables,
+            sink_expression,
+        ]
+
     def _build_edges(
         self,
         nodes: list[AttackSurfaceNode],

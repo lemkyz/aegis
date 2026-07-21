@@ -129,3 +129,59 @@ def test_ignores_unsupported_language() -> None:
     assert result.nodes == []
     assert result.edges == []
     assert result.summary.nodes_found == 0
+
+
+def test_traces_python_local_source_to_sink_flow() -> None:
+    flow = AttackSurfaceMapper._trace_local_data_flow(
+        code="""
+def fetch(request):
+    raw_url = request.args.get("url")
+    target = raw_url.strip()
+    return requests.get(target)
+""".strip(),
+        source_expression='request.args.get("url")',
+        sink_expression="requests.get(target)",
+    )
+
+    assert flow == [
+        'request.args.get("url")',
+        "raw_url",
+        "target",
+        "requests.get(target)",
+    ]
+
+
+def test_traces_javascript_local_source_to_sink_flow() -> None:
+    flow = AttackSurfaceMapper._trace_local_data_flow(
+        code="""
+function fetchTarget(req) {
+  const raw = req.query.url;
+  const target = raw.trim();
+  return fetch(target);
+}
+""".strip(),
+        source_expression="req.query.url",
+        sink_expression="fetch(target)",
+    )
+
+    assert flow == [
+        "req.query.url",
+        "raw",
+        "target",
+        "fetch(target)",
+    ]
+
+
+def test_does_not_trace_unrelated_value_to_sink() -> None:
+    flow = AttackSurfaceMapper._trace_local_data_flow(
+        code="""
+def fetch(request):
+    raw_url = request.args.get("url")
+    target = "https://api.example.com"
+    return requests.get(target)
+""".strip(),
+        source_expression='request.args.get("url")',
+        sink_expression="requests.get(target)",
+    )
+
+    assert flow == []
