@@ -56,6 +56,11 @@
         "category": "Aegis"
       },
       {
+        "command": "aegis.runAuthorizedDynamicBaseline",
+        "title": "Aegis: Run Authorized Dynamic Baseline",
+        "category": "Aegis"
+      },
+      {
         "command": "aegis.applySecureFix",
         "title": "Aegis: Apply Secure Fix",
         "category": "Aegis"
@@ -95,9 +100,14 @@
           "group": "aegis@3"
         },
         {
+          "command": "aegis.runAuthorizedDynamicBaseline",
+          "when": "editorTextFocus",
+          "group": "aegis@4"
+        },
+        {
           "command": "aegis.applySecureFix",
           "when": "editorHasSelection",
-          "group": "aegis@4"
+          "group": "aegis@5"
         }
       ],
       "explorer/context": [

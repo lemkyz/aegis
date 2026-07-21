@@ -60,6 +60,7 @@ class AegisReportContentProvider {
     }
 }
 let lastAnalysis;
+let authorizedDynamicBaseline;
 let latestWorkspaceScan;
 let reportContentProvider;
 let latestDependencyScan;
@@ -92,6 +93,7 @@ function activate(context) {
     const scanStagedChangesCommand = vscode.commands.registerCommand("aegis.scanStagedChanges", () => scanGitChanges("staged"));
     const deepAnalysisCommand = vscode.commands.registerCommand("aegis.deepAnalyzeSelectedCode", async () => analyzeSelectedCode("deep"));
     const applyFixCommand = vscode.commands.registerCommand("aegis.applySecureFix", applySecureFix);
+    const runDynamicBaselineCommand = vscode.commands.registerCommand("aegis.runAuthorizedDynamicBaseline", runAuthorizedDynamicBaseline);
     const deepAnalyzeDiagnosticCommand = vscode.commands.registerCommand("aegis.deepAnalyzeDiagnostic", deepAnalyzeDiagnostic);
     const openLastReportCommand = vscode.commands.registerCommand("aegis.openLastSecurityReport", openLastSecurityReport);
     const codeActionProvider = vscode.languages.registerCodeActionsProvider({
@@ -102,7 +104,7 @@ function activate(context) {
             vscode.CodeActionKind.QuickFix,
         ],
     });
-    context.subscriptions.push(diagnosticCollection, reportContentProvider, reportProviderRegistration, securityTreeView, openWorkspaceFindingCommand, openDependencyManifestCommand, openAttackSurfaceNodeCommand, refreshSecurityViewCommand, fastScanCommand, fastScanCurrentFileCommand, scanWorkspaceCommand, mapAttackSurfaceCommand, generateThreatModelCommand, scanDependenciesCommand, scanUncommittedChangesCommand, scanStagedChangesCommand, deepAnalysisCommand, applyFixCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
+    context.subscriptions.push(diagnosticCollection, reportContentProvider, reportProviderRegistration, securityTreeView, openWorkspaceFindingCommand, openDependencyManifestCommand, openAttackSurfaceNodeCommand, refreshSecurityViewCommand, fastScanCommand, fastScanCurrentFileCommand, scanWorkspaceCommand, mapAttackSurfaceCommand, generateThreatModelCommand, scanDependenciesCommand, scanUncommittedChangesCommand, scanStagedChangesCommand, deepAnalysisCommand, applyFixCommand, runDynamicBaselineCommand, deepAnalyzeDiagnosticCommand, openLastReportCommand, codeActionProvider);
 }
 class AegisSecurityTreeProvider {
     changeEmitter = new vscode.EventEmitter();
@@ -1958,6 +1960,258 @@ async function analyzeSelectedCode(mode) {
             ? error.message
             : "Unknown analysis error.";
         void vscode.window.showErrorMessage(`Aegis: ${message}`);
+    }
+}
+async function runAuthorizedDynamicBaseline() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        void vscode.window.showWarningMessage("Aegis: Open the vulnerable source file first.");
+        return;
+    }
+    if (!lastAnalysis) {
+        void vscode.window.showWarningMessage("Aegis: Run Deep Analysis before recording a dynamic baseline.");
+        return;
+    }
+    const document = editor.document;
+    if (document.uri.toString() !==
+        lastAnalysis.documentUri) {
+        void vscode.window.showWarningMessage("Aegis: The active file does not match the latest analysis.");
+        return;
+    }
+    if (document.version !==
+        lastAnalysis.documentVersion) {
+        void vscode.window.showWarningMessage("Aegis: The file changed after analysis. Run Deep Analysis again.");
+        return;
+    }
+    const repositoryRoot = await resolveVerificationProjectRoot(document);
+    const relativeEntrypoint = path.relative(repositoryRoot, document.fileName);
+    if (!relativeEntrypoint ||
+        relativeEntrypoint.startsWith("..") ||
+        path.isAbsolute(relativeEntrypoint)) {
+        void vscode.window.showErrorMessage("Aegis: The active file must be inside the resolved repository.");
+        return;
+    }
+    const category = await vscode.window.showQuickPick([
+        {
+            label: "Command Injection",
+            value: "command_injection",
+        },
+        {
+            label: "SQL Injection",
+            value: "sql_injection",
+        },
+        {
+            label: "Path Traversal",
+            value: "path_traversal",
+        },
+        {
+            label: "SSRF",
+            value: "ssrf",
+        },
+        {
+            label: "Authentication Bypass",
+            value: "authentication_bypass",
+        },
+        {
+            label: "Unsafe Data Flow",
+            value: "unsafe_data_flow",
+        },
+    ], {
+        title: "Aegis Authorized Dynamic Baseline",
+        placeHolder: "Choose the validation category matching the analyzed vulnerability.",
+    });
+    if (!category) {
+        return;
+    }
+    const defaultRuntime = document.languageId === "javascript" ||
+        document.languageId === "typescript" ||
+        document.languageId === "javascriptreact" ||
+        document.languageId === "typescriptreact"
+        ? "node"
+        : "python";
+    const runtimeChoice = await vscode.window.showQuickPick([
+        {
+            label: "Python",
+            value: "python",
+        },
+        {
+            label: "Node.js",
+            value: "node",
+        },
+    ], {
+        title: "Validation Runtime",
+        placeHolder: `Recommended: ${defaultRuntime}`,
+    });
+    if (!runtimeChoice) {
+        return;
+    }
+    const entrypoint = await vscode.window.showInputBox({
+        title: "Validation Entrypoint",
+        prompt: "Repository-relative file executed inside the read-only sandbox.",
+        value: relativeEntrypoint
+            .split(path.sep)
+            .join("/"),
+        validateInput: (value) => {
+            const normalized = value.trim();
+            if (!normalized) {
+                return "Entrypoint is required.";
+            }
+            if (path.isAbsolute(normalized) ||
+                normalized === ".." ||
+                normalized.startsWith("../") ||
+                normalized.includes("/../")) {
+                return "Entrypoint must stay inside the repository.";
+            }
+            return undefined;
+        },
+    });
+    if (!entrypoint) {
+        return;
+    }
+    const stdoutMarker = await vscode.window.showInputBox({
+        title: "Required Evidence Marker",
+        prompt: "Exact stdout text proving that the authorized validation reproduced the vulnerable behavior.",
+        placeHolder: "AEGIS_EXPLOIT_CONFIRMED",
+        validateInput: (value) => value.trim().length === 0
+            ? "A deterministic evidence marker is required."
+            : value.length > 1_000
+                ? "Marker must not exceed 1,000 characters."
+                : undefined,
+    });
+    if (!stdoutMarker) {
+        return;
+    }
+    const authorization = await vscode.window.showWarningMessage("Authorize isolated dynamic validation for this local repository?", {
+        modal: true,
+        detail: [
+            `Repository: ${repositoryRoot}`,
+            `Entrypoint: ${entrypoint}`,
+            `Category: ${category.value}`,
+            "",
+            "Aegis will run this file in a hardened local container with no network, a read-only repository mount, dropped capabilities, and strict resource limits.",
+        ].join("\n"),
+    }, "I Authorize This Validation", "Cancel");
+    if (authorization !==
+        "I Authorize This Validation") {
+        return;
+    }
+    const configuration = vscode.workspace.getConfiguration("aegis");
+    const backendUrl = configuration
+        .get("backendUrl", "http://127.0.0.1:8000")
+        .replace(/\/+$/, "");
+    const finding = lastAnalysis.response.findings[0];
+    const firstRuleId = finding?.scanner_evidence[0]?.rule_id;
+    const threatId = [
+        firstRuleId ||
+            finding?.title ||
+            category.value,
+        path.basename(document.fileName),
+    ].join(":");
+    const authorizationRequest = {
+        authorization_confirmed: true,
+        target_type: "local_repository",
+        target: repositoryRoot,
+        allowed_test_types: [
+            category.value,
+        ],
+        dry_run: false,
+        timeout_seconds: 10,
+        memory_limit_mb: 256,
+        cpu_limit: 0.5,
+        network_policy: "disabled",
+    };
+    const plan = {
+        authorization: authorizationRequest,
+        runtime: runtimeChoice.value,
+        entrypoint: entrypoint.trim(),
+        test_type: category.value,
+    };
+    const successCriteria = {
+        expected_exit_code: 0,
+        stdout_contains: stdoutMarker.trim(),
+    };
+    try {
+        const beforeExecution = await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Aegis is running the authorized dynamic baseline",
+            cancellable: false,
+        }, () => requestValidationExecution(backendUrl, plan));
+        const beforeEvidence = await requestValidationEvidence(backendUrl, {
+            threat_id: threatId,
+            category: category.value,
+            execution: beforeExecution,
+            success_criteria: successCriteria,
+        });
+        authorizedDynamicBaseline = {
+            documentUri: document.uri.toString(),
+            documentVersion: document.version,
+            repositoryRoot,
+            threatId,
+            category: category.value,
+            plan,
+            successCriteria,
+            beforeExecution,
+            beforeEvidence,
+        };
+        if (beforeEvidence.verdict !==
+            "confirmed") {
+            void vscode.window.showWarningMessage(`Aegis dynamic baseline was recorded but not confirmed: ${beforeEvidence.verdict}. Fix verification will remain partial.`);
+            return;
+        }
+        void vscode.window.showInformationMessage(`Aegis dynamic baseline CONFIRMED for ${category.label}. The same authorized plan can now be replayed after applying the fix.`);
+    }
+    catch (error) {
+        authorizedDynamicBaseline = undefined;
+        const message = error instanceof Error
+            ? error.message
+            : "Unknown dynamic validation error.";
+        void vscode.window.showErrorMessage(`Aegis dynamic baseline failed: ${message}`);
+    }
+}
+async function requestValidationExecution(backendUrl, plan) {
+    return requestValidationJson(backendUrl, "/v1/validation/run", {
+        plan,
+    }, 90_000);
+}
+async function requestValidationEvidence(backendUrl, payload) {
+    return requestValidationJson(backendUrl, "/v1/validation/evidence", payload, 30_000);
+}
+async function requestValidationJson(backendUrl, endpoint, body, timeoutMilliseconds) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMilliseconds);
+    try {
+        const response = await fetch(`${backendUrl}${endpoint}`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+        const rawBody = await response.text();
+        if (!response.ok) {
+            let detail = rawBody;
+            try {
+                const payload = JSON.parse(rawBody);
+                detail =
+                    payload.detail ?? rawBody;
+            }
+            catch {
+                // Preserve the raw response.
+            }
+            throw new Error(`Backend HTTP ${response.status}: ${detail}`);
+        }
+        return JSON.parse(rawBody);
+    }
+    catch (error) {
+        if (error instanceof Error &&
+            error.name === "AbortError") {
+            throw new Error(`Validation request timed out after ${Math.round(timeoutMilliseconds / 1_000)} seconds.`);
+        }
+        throw error;
+    }
+    finally {
+        clearTimeout(timeout);
     }
 }
 async function applySecureFix() {
