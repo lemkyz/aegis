@@ -552,3 +552,126 @@ def ping(host):
         "disabled" in control.lower()
         for control in controls
     )
+
+
+def test_unrelated_shell_control_does_not_protect_sink() -> None:
+    context = """
+import os
+import subprocess
+
+
+def safe_ping(host):
+    return subprocess.run(
+        ["ping", "-c", "1", host],
+        shell=False,
+    )
+
+
+def vulnerable(command):
+    return os.system(command)
+""".strip()
+
+    controls = ThreatModeler._detect_blocking_controls(
+        category="command_injection",
+        context=context,
+        evidence="return os.system(command)",
+    )
+
+    assert controls == []
+
+
+def test_shell_control_is_detected_for_its_own_sink() -> None:
+    context = """
+import subprocess
+
+
+def safe_ping(host):
+    return subprocess.run(
+        ["ping", "-c", "1", host],
+        shell=False,
+    )
+""".strip()
+
+    controls = ThreatModeler._detect_blocking_controls(
+        category="command_injection",
+        context=context,
+        evidence=(
+            'return subprocess.run('
+        ),
+    )
+
+    assert len(controls) == 2
+    assert any(
+        "argument list" in control.lower()
+        for control in controls
+    )
+    assert any(
+        "disabled" in control.lower()
+        for control in controls
+    )
+
+
+def test_unrelated_ssrf_allowlist_does_not_protect_sink() -> None:
+    context = """
+from urllib.parse import urlparse
+import requests
+
+
+ALLOWED_HOSTS = {"api.example.com"}
+
+
+def validated_fetch(target):
+    hostname = urlparse(target).hostname
+
+    if hostname not in ALLOWED_HOSTS:
+        raise ValueError("host not allowed")
+
+    return requests.get(target)
+
+
+def vulnerable_fetch(target):
+    return requests.get(target)
+""".strip()
+
+    controls = ThreatModeler._detect_blocking_controls(
+        category="ssrf",
+        context=context,
+        evidence="return requests.get(target)",
+    )
+
+    assert controls == []
+
+
+def test_ssrf_allowlist_is_detected_for_its_own_sink() -> None:
+    context = """
+from urllib.parse import urlparse
+import requests
+
+
+ALLOWED_HOSTS = {"api.example.com"}
+
+
+def validated_fetch(target):
+    hostname = urlparse(target).hostname
+
+    if hostname not in ALLOWED_HOSTS:
+        raise ValueError("host not allowed")
+
+    return requests.get(target)
+""".strip()
+
+    controls = ThreatModeler._detect_blocking_controls(
+        category="ssrf",
+        context=context,
+        evidence="return requests.get(target)",
+    )
+
+    assert len(controls) >= 2
+    assert any(
+        "allowlist" in control.lower()
+        for control in controls
+    )
+    assert any(
+        "hostname is parsed" in control.lower()
+        for control in controls
+    )

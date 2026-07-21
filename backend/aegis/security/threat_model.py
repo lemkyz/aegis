@@ -1112,6 +1112,7 @@ class ThreatModeler:
             self._detect_blocking_controls(
                 category=threat.category,
                 context=context,
+                evidence=node.evidence,
             )
         )
 
@@ -1145,12 +1146,95 @@ class ThreatModeler:
         )
 
     @staticmethod
+    def _scope_context_to_evidence(
+        *,
+        context: str,
+        evidence: str,
+    ) -> str:
+        if not evidence.strip():
+            return context
+
+        lines = context.splitlines()
+        evidence_line = evidence.strip().splitlines()[0].strip()
+
+        matching_indices: list[int] = []
+
+        for index, line in enumerate(lines):
+            stripped_line = line.strip()
+
+            if (
+                evidence_line
+                and stripped_line
+                and (
+                    evidence_line in stripped_line
+                    or stripped_line in evidence_line
+                )
+            ):
+                matching_indices.append(index)
+
+        if not matching_indices:
+            return context
+
+        # When identical sink evidence occurs more than once,
+        # prefer the final occurrence. This avoids associating
+        # controls from an earlier safe function with a later
+        # vulnerable sink.
+        evidence_index = matching_indices[-1]
+
+        function_patterns = (
+            re.compile(
+                r"^\s*(?:async\s+)?def\s+"
+                r"[A-Za-z_]\w*\s*\("
+            ),
+            re.compile(
+                r"^\s*(?:async\s+)?function\s+"
+                r"[A-Za-z_$][A-Za-z0-9_$]*\s*\("
+            ),
+        )
+
+        start = 0
+
+        for index in range(
+            evidence_index,
+            -1,
+            -1,
+        ):
+            if any(
+                pattern.search(lines[index])
+                for pattern in function_patterns
+            ):
+                start = index
+                break
+
+        end = len(lines)
+
+        for index in range(
+            evidence_index + 1,
+            len(lines),
+        ):
+            if any(
+                pattern.search(lines[index])
+                for pattern in function_patterns
+            ):
+                end = index
+                break
+
+        return "\n".join(lines[start:end])
+
+    @staticmethod
     def _detect_blocking_controls(
         *,
         category: str,
         context: str,
+        evidence: str = "",
     ) -> list[str]:
-        lowered = context.lower()
+        scoped_context = (
+            ThreatModeler._scope_context_to_evidence(
+                context=context,
+                evidence=evidence,
+            )
+        )
+        lowered = scoped_context.lower()
         controls: list[str] = []
 
         if category == "command_injection":
@@ -1187,7 +1271,7 @@ class ThreatModeler:
                 r"(?:\?|%s|:\w+|\$\d+)"
                 r"[\s\S]*?[\"'])"
                 r"\s*,\s*(?:\(|\[|\{)",
-                context,
+                scoped_context,
                 flags=re.IGNORECASE,
             )
 
