@@ -2176,6 +2176,32 @@ async function requestValidationExecution(backendUrl, plan) {
 async function requestValidationEvidence(backendUrl, payload) {
     return requestValidationJson(backendUrl, "/v1/validation/evidence", payload, 30_000);
 }
+async function requestValidationReplay(backendUrl, baseline) {
+    return requestValidationJson(backendUrl, "/v1/validation/replay", {
+        threat_id: baseline.threatId,
+        category: baseline.category,
+        plan: baseline.plan,
+        success_criteria: baseline.successCriteria,
+        before_execution: baseline.beforeExecution,
+    }, 90_000);
+}
+async function requestUnifiedFixVerification(backendUrl, input) {
+    const projectChecks = [
+        input.projectVerification.syntax,
+        input.projectVerification.tests,
+        input.projectVerification.build,
+    ].map((check) => ({
+        name: check.name,
+        status: check.status,
+        details: check.details,
+    }));
+    return requestValidationJson(backendUrl, "/v1/validation/fix-verification", {
+        replay: input.replay,
+        project_checks: projectChecks,
+        static_target_resolved: input.targetResolved,
+        static_regression_free: input.regressionFree,
+    }, 30_000);
+}
 async function requestValidationJson(backendUrl, endpoint, body, timeoutMilliseconds) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMilliseconds);
@@ -2224,6 +2250,15 @@ async function applySecureFix() {
         return;
     }
     const analyzedState = lastAnalysis;
+    const dynamicBaselineForFix = authorizedDynamicBaseline &&
+        authorizedDynamicBaseline.documentUri ===
+            analyzedState.documentUri &&
+        authorizedDynamicBaseline.documentVersion ===
+            analyzedState.documentVersion &&
+        authorizedDynamicBaseline.beforeEvidence.verdict ===
+            "confirmed"
+        ? authorizedDynamicBaseline
+        : undefined;
     const documentUri = vscode.Uri.parse(analyzedState.documentUri);
     const document = await vscode.workspace.openTextDocument(documentUri);
     const editor = await vscode.window.showTextDocument(document, {
@@ -2371,33 +2406,105 @@ async function applySecureFix() {
     ];
     const targetResolved = securityDelta.remainingTargetFindings.length === 0;
     const regressionFree = securityDelta.introducedFindings.length === 0;
+    let dynamicReplayReport = {
+        status: "not_run",
+        reasons: [
+            "No matching confirmed dynamic baseline was available for replay.",
+        ],
+    };
+    let unifiedResult;
+    if (dynamicBaselineForFix) {
+        try {
+            const replayResult = await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Aegis is replaying the authorized dynamic validation",
+                cancellable: false,
+            }, () => requestValidationReplay(backendUrl, dynamicBaselineForFix));
+            dynamicReplayReport = {
+                status: replayResult.comparison.verdict,
+                confidence: replayResult.comparison.confidence,
+                beforeVerdict: replayResult.comparison.before_verdict,
+                afterVerdict: replayResult.comparison.after_verdict,
+                reasons: [
+                    ...replayResult.comparison.reasons,
+                    ...replayResult.comparison.denials,
+                ],
+            };
+            unifiedResult =
+                await requestUnifiedFixVerification(backendUrl, {
+                    replay: replayResult.comparison,
+                    projectVerification,
+                    targetResolved,
+                    regressionFree,
+                });
+        }
+        catch (error) {
+            const message = error instanceof Error
+                ? error.message
+                : "Unknown dynamic replay error.";
+            dynamicReplayReport = {
+                status: "inconclusive",
+                reasons: [
+                    `Dynamic replay could not be completed: ${message}`,
+                ],
+            };
+        }
+        finally {
+            authorizedDynamicBaseline = undefined;
+        }
+    }
+    const finalReportStatus = unifiedResult?.verdict === "verified"
+        ? "VERIFIED"
+        : unifiedResult?.verdict ===
+            "inconclusive" ||
+            dynamicReplayReport.status ===
+                "inconclusive" ||
+            dynamicReplayReport.status ===
+                "not_run"
+            ? (targetResolved &&
+                regressionFree
+                ? "PARTIAL"
+                : "FAILED")
+            : "FAILED";
     await showFixVerificationReport({
         fileName: document.fileName,
-        status: targetResolved && regressionFree
-            ? "PARTIAL"
-            : "FAILED",
+        status: finalReportStatus,
         projectVerification,
         targetResolved,
         regressionFree,
         securityDelta,
-        dynamicReplay: {
-            status: "not_run",
-            reasons: [
-                "No explicitly authorized dynamic baseline was available for replay.",
-            ],
-        },
+        dynamicReplay: dynamicReplayReport,
+        unifiedVerdict: unifiedResult?.verdict,
     });
-    if (targetResolved && regressionFree) {
+    if (unifiedResult?.verified &&
+        finalReportStatus === "VERIFIED") {
         const existingMessage = securityDelta.unchangedFindings.length > 0
             ? `${securityDelta.unchangedFindings.length} unrelated pre-existing finding(s) remain.`
             : "No pre-existing findings remain.";
         void vscode.window.showInformationMessage([
-            "Aegis Fix Status: PARTIAL — available checks passed.",
+            "Aegis Fix Status: VERIFIED.",
             ...verificationMessages,
             "Target vulnerability: RESOLVED.",
             "Regression check: PASSED.",
-            "Dynamic replay: NOT RUN.",
-            "An authorized dynamic baseline is required for VERIFIED status.",
+            "Dynamic replay: FIXED.",
+            `Unified verdict: ${unifiedResult.verdict.toUpperCase()}.`,
+            existingMessage,
+        ].join(" "));
+        return;
+    }
+    if (targetResolved &&
+        regressionFree &&
+        finalReportStatus === "PARTIAL") {
+        const existingMessage = securityDelta.unchangedFindings.length > 0
+            ? `${securityDelta.unchangedFindings.length} unrelated pre-existing finding(s) remain.`
+            : "No pre-existing findings remain.";
+        void vscode.window.showInformationMessage([
+            "Aegis Fix Status: PARTIAL — available checks passed, but complete dynamic proof was not obtained.",
+            ...verificationMessages,
+            "Target vulnerability: RESOLVED.",
+            "Regression check: PASSED.",
+            `Dynamic replay: ${formatDynamicReplayStatus(dynamicReplayReport)}.`,
+            "A confirmed and successfully completed dynamic replay is required for VERIFIED status.",
             existingMessage,
         ].join(" "));
         return;
@@ -2408,6 +2515,18 @@ async function applySecureFix() {
     }
     if (!regressionFree) {
         failureReasons.push(`${securityDelta.introducedFindings.length} new finding(s) were introduced`);
+    }
+    if (dynamicReplayReport.status ===
+        "still_exploitable") {
+        failureReasons.push("the authorized dynamic validation still reproduces");
+    }
+    if (unifiedResult &&
+        unifiedResult.verdict !== "verified" &&
+        unifiedResult.verdict !== "inconclusive") {
+        failureReasons.push(`unified verdict: ${unifiedResult.verdict}`);
+    }
+    if (failureReasons.length === 0) {
+        failureReasons.push("complete fix verification was not obtained");
     }
     void vscode.window.showWarningMessage(`Aegis Fix Status: FAILED — ${failureReasons.join("; ")}.`, "Open Problems").then((action) => {
         if (action === "Open Problems") {
