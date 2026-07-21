@@ -185,3 +185,118 @@ def fetch(request):
     )
 
     assert flow == []
+
+
+def test_builds_python_data_flow_edge() -> None:
+    mapper = AttackSurfaceMapper()
+
+    result = mapper.scan(
+        [
+            AttackSurfaceFile(
+                filename="ssrf.py",
+                language="python",
+                code="""
+import requests
+
+
+def fetch(request):
+    raw_url = request.args.get("url")
+    target = raw_url.strip()
+    return requests.get(target)
+""".strip(),
+            )
+        ]
+    )
+
+    source = next(
+        node
+        for node in result.nodes
+        if node.kind == "user_input"
+    )
+    sink = next(
+        node
+        for node in result.nodes
+        if node.kind == "outbound_request"
+    )
+
+    edge = next(
+        edge
+        for edge in result.edges
+        if edge.source == source.id
+        and edge.target == sink.id
+        and edge.relationship == "data_flow"
+    )
+
+    assert edge.confidence >= 0.84
+    assert result.summary.edges_found == len(
+        result.edges
+    )
+
+
+def test_builds_javascript_data_flow_edge() -> None:
+    mapper = AttackSurfaceMapper()
+
+    result = mapper.scan(
+        [
+            AttackSurfaceFile(
+                filename="command.js",
+                language="javascript",
+                code="""
+const { exec } = require("child_process");
+
+
+function run(req) {
+  const raw = req.query.command;
+  const command = raw.trim();
+  return exec(command);
+}
+""".strip(),
+            )
+        ]
+    )
+
+    source = next(
+        node
+        for node in result.nodes
+        if node.kind == "user_input"
+    )
+    sink = next(
+        node
+        for node in result.nodes
+        if node.kind == "process_execution"
+    )
+
+    assert any(
+        edge.source == source.id
+        and edge.target == sink.id
+        and edge.relationship == "data_flow"
+        and edge.confidence >= 0.84
+        for edge in result.edges
+    )
+
+
+def test_does_not_build_data_flow_edge_for_safe_constant() -> None:
+    mapper = AttackSurfaceMapper()
+
+    result = mapper.scan(
+        [
+            AttackSurfaceFile(
+                filename="safe.py",
+                language="python",
+                code="""
+import requests
+
+
+def fetch(request):
+    raw_url = request.args.get("url")
+    target = "https://api.example.com"
+    return requests.get(target)
+""".strip(),
+            )
+        ]
+    )
+
+    assert not any(
+        edge.relationship == "data_flow"
+        for edge in result.edges
+    )

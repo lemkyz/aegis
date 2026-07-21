@@ -240,7 +240,10 @@ class AttackSurfaceMapper:
             nodes.extend(self._scan_file(file))
 
         nodes = self._deduplicate_nodes(nodes)
-        edges = self._build_edges(nodes)
+        edges = self._build_edges(
+            nodes=nodes,
+            files=files,
+        )
 
         routes = [
             node
@@ -627,7 +630,9 @@ class AttackSurfaceMapper:
 
     def _build_edges(
         self,
+        *,
         nodes: list[AttackSurfaceNode],
+        files: list[AttackSurfaceFile],
     ) -> list[AttackSurfaceEdge]:
         edges: list[AttackSurfaceEdge] = []
 
@@ -667,7 +672,154 @@ class AttackSurfaceMapper:
                         )
                     )
 
-        return edges
+        file_code = {
+            file.filename: file.code
+            for file in files
+        }
+
+        source_nodes = [
+            node
+            for node in nodes
+            if node.kind == "user_input"
+        ]
+
+        sink_kinds = {
+            "database",
+            "filesystem",
+            "outbound_request",
+            "process_execution",
+        }
+
+        sink_nodes = [
+            node
+            for node in nodes
+            if node.kind in sink_kinds
+        ]
+
+        for source in source_nodes:
+            code = file_code.get(source.file)
+
+            if code is None:
+                continue
+
+            source_expression = (
+                self._extract_source_expression(
+                    source.evidence
+                )
+            )
+
+            if not source_expression:
+                continue
+
+            for sink in sink_nodes:
+                if (
+                    sink.file != source.file
+                    or sink.line_start
+                    < source.line_start
+                ):
+                    continue
+
+                flow = self._trace_local_data_flow(
+                    code=code,
+                    source_expression=source_expression,
+                    sink_expression=sink.evidence,
+                )
+
+                if not flow:
+                    continue
+
+                intermediate_count = max(
+                    len(flow) - 2,
+                    0,
+                )
+
+                confidence = max(
+                    0.78,
+                    0.96
+                    - (0.04 * intermediate_count),
+                )
+
+                edges.append(
+                    AttackSurfaceEdge(
+                        source=source.id,
+                        target=sink.id,
+                        relationship="data_flow",
+                        confidence=confidence,
+                    )
+                )
+
+        return self._deduplicate_edges(edges)
+
+    @staticmethod
+    def _extract_source_expression(
+        evidence: str,
+    ) -> str:
+        stripped = evidence.strip().rstrip(";")
+
+        assignment = re.match(
+            r"^(?:(?:const|let|var)\s+)?"
+            r"[A-Za-z_$][A-Za-z0-9_$]*"
+            r"(?:\s*:\s*[^=]+)?"
+            r"\s*=\s*(?P<value>.+)$",
+            stripped,
+        )
+
+        if assignment:
+            return assignment.group("value").strip()
+
+        source_patterns = (
+            r"request\.(?:args|form|json|query_params|"
+            r"path_params)[^,;)]*(?:\([^)]*\))?",
+            r"(?:req|request)\."
+            r"(?:body|query|params|headers|cookies)"
+            r"(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?",
+        )
+
+        for pattern in source_patterns:
+            match = re.search(
+                pattern,
+                stripped,
+                flags=re.IGNORECASE,
+            )
+
+            if match:
+                return match.group(0)
+
+        return ""
+
+    @staticmethod
+    def _deduplicate_edges(
+        edges: list[AttackSurfaceEdge],
+    ) -> list[AttackSurfaceEdge]:
+        unique: dict[
+            tuple[str, str, str],
+            AttackSurfaceEdge,
+        ] = {}
+
+        for edge in edges:
+            key = (
+                edge.source,
+                edge.target,
+                edge.relationship,
+            )
+
+            existing = unique.get(key)
+
+            if (
+                existing is None
+                or edge.confidence
+                > existing.confidence
+            ):
+                unique[key] = edge
+
+        return sorted(
+            unique.values(),
+            key=lambda edge: (
+                edge.source,
+                edge.target,
+                edge.relationship,
+            ),
+        )
 
     @staticmethod
     def _node(
