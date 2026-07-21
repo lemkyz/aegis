@@ -865,3 +865,44 @@ def fetch(request):
     )
 
     assert threat.data_flow == []
+
+
+def test_multiline_filesystem_flow_is_exposed() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="files.ts",
+            language="typescript",
+            code="""
+export function loadFile(filename: string): string {
+  return fs.readFileSync(
+    path.join("/srv/uploads", filename),
+    "utf8",
+  );
+}
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "path_traversal"
+    )
+
+    assert threat.data_flow
+    assert threat.data_flow[0] == "filename"
+    assert "fs.readFileSync" in threat.data_flow[-1]
+    assert 'path.join("/srv/uploads", filename)' in (
+        threat.data_flow[-1]
+    )
+
+    sink = next(
+        node
+        for node in result.attack_surface_nodes
+        if node.kind == "filesystem"
+    )
+
+    assert sink.line_start == 2
+    assert sink.line_end == 5

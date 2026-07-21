@@ -416,11 +416,21 @@ class AttackSurfaceMapper:
                     )
                 )
 
+            (
+                pattern_evidence,
+                pattern_line_end,
+            ) = self._collect_multiline_evidence(
+                lines=lines,
+                start_index=line_number - 1,
+                patterns=self._python_patterns,
+            )
+
             nodes.extend(
                 self._match_patterns(
                     file=file,
-                    line=line,
+                    line=pattern_evidence,
                     line_number=line_number,
+                    line_end=pattern_line_end,
                     patterns=self._python_patterns,
                 )
             )
@@ -482,16 +492,83 @@ class AttackSurfaceMapper:
                     )
                 )
 
+            (
+                pattern_evidence,
+                pattern_line_end,
+            ) = self._collect_multiline_evidence(
+                lines=lines,
+                start_index=line_number - 1,
+                patterns=self._javascript_patterns,
+            )
+
             nodes.extend(
                 self._match_patterns(
                     file=file,
-                    line=line,
+                    line=pattern_evidence,
                     line_number=line_number,
+                    line_end=pattern_line_end,
                     patterns=self._javascript_patterns,
                 )
             )
 
         return nodes
+
+    @staticmethod
+    def _collect_multiline_evidence(
+        *,
+        lines: list[str],
+        start_index: int,
+        patterns: tuple[_Pattern, ...],
+        max_lines: int = 30,
+    ) -> tuple[str, int]:
+        first_line = lines[start_index]
+        stripped_first_line = first_line.strip()
+
+        starts_relevant_match = any(
+            pattern.expression.search(first_line)
+            is not None
+            for pattern in patterns
+        )
+
+        if not starts_relevant_match:
+            return stripped_first_line, start_index + 1
+
+        evidence_lines = [stripped_first_line]
+
+        balance = (
+            first_line.count("(")
+            - first_line.count(")")
+        )
+
+        if balance <= 0:
+            return first_line.strip(), start_index + 1
+
+        final_index = start_index
+        limit = min(
+            len(lines),
+            start_index + max_lines,
+        )
+
+        for index in range(
+            start_index + 1,
+            limit,
+        ):
+            current = lines[index]
+            evidence_lines.append(current.strip())
+
+            balance += (
+                current.count("(")
+                - current.count(")")
+            )
+            final_index = index
+
+            if balance <= 0:
+                break
+
+        return (
+            "\n".join(evidence_lines),
+            final_index + 1,
+        )
 
     def _function_parameter_nodes(
         self,
@@ -566,6 +643,7 @@ class AttackSurfaceMapper:
         file: AttackSurfaceFile,
         line: str,
         line_number: int,
+        line_end: int | None = None,
         patterns: tuple[_Pattern, ...],
     ) -> list[AttackSurfaceNode]:
         return [
@@ -574,6 +652,7 @@ class AttackSurfaceMapper:
                 label=pattern.label,
                 file=file.filename,
                 line=line_number,
+                line_end=line_end,
                 evidence=line.strip(),
                 framework=pattern.framework,
                 risk=pattern.risk,
@@ -745,17 +824,17 @@ class AttackSurfaceMapper:
                 if target not in tainted_variables:
                     tainted_variables.append(target)
 
-        sink_line = lines[sink_index]
+        sink_text = sink_expression
 
         source_reaches_sink = (
             AttackSurfaceMapper._expression_occurs(
                 source_expression,
-                sink_line,
+                sink_text,
             )
             or any(
                 re.search(
                     rf"\b{re.escape(variable)}\b",
-                    sink_line,
+                    sink_text,
                 )
                 is not None
                 for variable in tainted_variables
@@ -980,6 +1059,7 @@ class AttackSurfaceMapper:
         line: int,
         evidence: str,
         risk: str,
+        line_end: int | None = None,
         framework: str | None = None,
         symbol: str | None = None,
         method: str | None = None,
@@ -1002,7 +1082,11 @@ class AttackSurfaceMapper:
             label=label,
             file=file,
             line_start=line,
-            line_end=line,
+            line_end=(
+                line_end
+                if line_end is not None
+                else line
+            ),
             symbol=symbol,
             framework=framework,
             method=method,

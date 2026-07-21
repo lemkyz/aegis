@@ -452,3 +452,51 @@ def execute():
         )
         for edge in result.edges
     )
+
+
+def test_collects_multiline_typescript_sink_and_flow() -> None:
+    mapper = AttackSurfaceMapper()
+
+    result = mapper.scan(
+        [
+            AttackSurfaceFile(
+                filename="files.ts",
+                language="typescript",
+                code="""
+export function loadFile(filename: string): string {
+  return fs.readFileSync(
+    path.join("/srv/uploads", filename),
+    "utf8",
+  );
+}
+""".strip(),
+            )
+        ]
+    )
+
+    source = next(
+        node
+        for node in result.nodes
+        if node.kind == "function_parameter"
+        and node.symbol == "filename"
+    )
+
+    sink = next(
+        node
+        for node in result.nodes
+        if node.kind == "filesystem"
+    )
+
+    assert sink.line_start == 2
+    assert sink.line_end == 5
+    assert 'path.join("/srv/uploads", filename)' in (
+        sink.evidence
+    )
+    assert '"utf8"' in sink.evidence
+
+    assert any(
+        edge.source == source.id
+        and edge.target == sink.id
+        and edge.relationship == "data_flow"
+        for edge in result.edges
+    )
