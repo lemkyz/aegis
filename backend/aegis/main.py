@@ -22,6 +22,8 @@ from aegis.schemas.validation import (
     DynamicValidationEvidenceResponse,
     ValidationReplayCompareRequest,
     ValidationReplayCompareResponse,
+    ValidationReplayRequest,
+    ValidationReplayResponse,
     ValidationExecutionRequest,
     ValidationExecutionResult,
     ValidationPlanRequest,
@@ -52,6 +54,9 @@ from aegis.security.validation_evidence import (
 from aegis.security.validation_replay import (
     ValidationReplayComparator,
 )
+from aegis.security.validation_replay_orchestrator import (
+    ValidationReplayOrchestrator,
+)
 
 
 settings = get_settings()
@@ -80,6 +85,13 @@ dynamic_validation_evaluator = (
 )
 validation_replay_comparator = (
     ValidationReplayComparator()
+)
+validation_replay_orchestrator = (
+    ValidationReplayOrchestrator(
+        runner=validation_runner,
+        evaluator=dynamic_validation_evaluator,
+        comparator=validation_replay_comparator,
+    )
 )
 
 
@@ -311,6 +323,31 @@ async def compare_validation_replay(
             detail=(
                 "Dynamic validation replay comparison "
                 f"failed: {exc}"
+            ),
+        ) from exc
+
+
+@app.post(
+    "/v1/validation/replay",
+    response_model=ValidationReplayResponse,
+)
+async def replay_validation(
+    request: ValidationReplayRequest,
+) -> ValidationReplayResponse:
+    """
+    Re-run the same authorized validation plan after
+    a fix and compare before/after dynamic evidence.
+    """
+    try:
+        return await validation_replay_orchestrator.replay(
+            request
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Dynamic validation replay failed: "
+                f"{exc}"
             ),
         ) from exc
 

@@ -301,3 +301,31 @@ class ValidationReplayCompareResponse(BaseModel):
     denials: list[str] = Field(
         default_factory=list,
     )
+
+
+class ValidationReplayRequest(BaseModel):
+    threat_id: str = Field(
+        min_length=1,
+        max_length=300,
+    )
+    category: ValidationTestType
+
+    plan: ValidationPlanRequest
+    success_criteria: ValidationSuccessCriteria
+
+    before_execution: ValidationExecutionResult
+
+
+class ValidationReplayResponse(BaseModel):
+    orchestrator: str
+
+    threat_id: str
+    category: ValidationTestType
+
+    before_execution: ValidationExecutionResult
+    before_evidence: DynamicValidationEvidenceResponse
+
+    after_execution: ValidationExecutionResult
+    after_evidence: DynamicValidationEvidenceResponse
+
+    comparison: ValidationReplayCompareResponse
