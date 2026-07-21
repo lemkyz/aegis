@@ -14,6 +14,10 @@ from aegis.schemas.threat_model import (
     ThreatModelScanRequest,
     ThreatModelScanResponse,
 )
+from aegis.schemas.validation import (
+    ValidationAuthorizationRequest,
+    ValidationAuthorizationResponse,
+)
 from aegis.schemas.dependencies import (
     DependencyManifestScanRequest,
     DependencyManifestScanResponse,
@@ -25,6 +29,9 @@ from aegis.security.attack_surface import AttackSurfaceMapper
 from aegis.security.dependency_files import parse_dependency_file
 from aegis.security.osv import OsvDependencyScanner
 from aegis.security.threat_model import ThreatModeler
+from aegis.security.authorization import (
+    ValidationAuthorizer,
+)
 
 
 settings = get_settings()
@@ -41,6 +48,7 @@ threat_modeler = ThreatModeler(
     mapper=attack_surface_mapper,
 )
 dependency_scanner = OsvDependencyScanner()
+validation_authorizer = ValidationAuthorizer()
 
 
 @app.get("/health")
@@ -144,6 +152,32 @@ async def scan_threat_model(
             status_code=502,
             detail=(
                 "Threat modeling failed: "
+                f"{exc}"
+            ),
+        ) from exc
+
+
+@app.post(
+    "/v1/validation/authorize",
+    response_model=ValidationAuthorizationResponse,
+)
+async def authorize_validation(
+    request: ValidationAuthorizationRequest,
+) -> ValidationAuthorizationResponse:
+    """
+    Validate explicit authorization, target scope,
+    and safe resource limits before dynamic execution.
+    This endpoint does not execute tests or commands.
+    """
+    try:
+        return validation_authorizer.authorize(
+            request
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Validation authorization failed: "
                 f"{exc}"
             ),
         ) from exc
