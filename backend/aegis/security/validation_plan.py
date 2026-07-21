@@ -207,6 +207,15 @@ class ValidationPlanBuilder:
             return [
                 "python",
                 "-I",
+                "-c",
+                (
+                    "import runpy, sys; "
+                    "sys.path.insert(0, '/workspace'); "
+                    "runpy.run_path("
+                    "sys.argv[1], "
+                    "run_name='__main__'"
+                    ")"
+                ),
                 workspace_entrypoint,
             ]
 

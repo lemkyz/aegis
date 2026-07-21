@@ -53,6 +53,15 @@ def test_validation_plan_endpoint_returns_plan() -> None:
     assert payload["command"] == [
         "python",
         "-I",
+        "-c",
+        (
+            "import runpy, sys; "
+            "sys.path.insert(0, '/workspace'); "
+            "runpy.run_path("
+            "sys.argv[1], "
+            "run_name='__main__'"
+            ")"
+        ),
         "/workspace/validation.py",
     ]
     assert payload["sandbox"]["network"] == "none"

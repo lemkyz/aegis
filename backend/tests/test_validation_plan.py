@@ -54,6 +54,15 @@ def test_builds_hardened_python_plan() -> None:
     assert result.command == [
         "python",
         "-I",
+        "-c",
+        (
+            "import runpy, sys; "
+            "sys.path.insert(0, '/workspace'); "
+            "runpy.run_path("
+            "sys.argv[1], "
+            "run_name='__main__'"
+            ")"
+        ),
         "/workspace/validation.py",
     ]
 
@@ -154,4 +163,42 @@ def test_rejects_non_repository_target() -> None:
     assert any(
         "local repository" in denial.lower()
         for denial in result.denials
+    )
+
+
+def test_python_command_keeps_isolation_and_supports_workspace_imports() -> None:
+    result = ValidationPlanBuilder().build(
+        ValidationPlanRequest(
+            authorization=(
+                ValidationAuthorizationRequest(
+                    authorization_confirmed=True,
+                    target_type="local_repository",
+                    target="/tmp/aegis-project",
+                    allowed_test_types=[
+                        "command_injection",
+                    ],
+                    dry_run=False,
+                    timeout_seconds=10,
+                    memory_limit_mb=256,
+                    cpu_limit=0.5,
+                    network_policy="disabled",
+                )
+            ),
+            runtime="python",
+            entrypoint="validation.py",
+            test_type="command_injection",
+        )
+    )
+
+    assert result.command[0:3] == [
+        "python",
+        "-I",
+        "-c",
+    ]
+    assert "sys.path.insert(0, '/workspace')" in (
+        result.command[3]
+    )
+    assert "runpy.run_path" in result.command[3]
+    assert result.command[4] == (
+        "/workspace/validation.py"
     )

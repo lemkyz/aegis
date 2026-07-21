@@ -83,7 +83,23 @@ def test_builds_hardened_podman_argv() -> None:
     )
     assert "sh" not in argv
     assert "bash" not in argv
-    assert "-c" not in argv
+    assert "/bin/sh" not in argv
+    assert "/bin/bash" not in argv
+
+    assert argv[-5:] == [
+        "python",
+        "-I",
+        "-c",
+        (
+            "import runpy, sys; "
+            "sys.path.insert(0, '/workspace'); "
+            "runpy.run_path("
+            "sys.argv[1], "
+            "run_name='__main__'"
+            ")"
+        ),
+        "/workspace/validation.py",
+    ]
 
 
 def test_rejects_non_ready_plan() -> None:
