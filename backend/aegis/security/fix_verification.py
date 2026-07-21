@@ -16,9 +16,15 @@ class UnifiedFixVerificationEvaluator:
             for check in request.project_checks
             if check.status == "failed"
         ]
+        skipped_checks = [
+            check.name
+            for check in request.project_checks
+            if check.status == "skipped"
+        ]
 
-        project_checks_passed = (
-            not failed_checks
+        project_checks_passed = all(
+            check.status == "passed"
+            for check in request.project_checks
         )
 
         dynamic_replay_fixed = (
@@ -35,6 +41,15 @@ class UnifiedFixVerificationEvaluator:
             reasons.append(
                 "One or more project verification "
                 "checks failed."
+            )
+
+        elif skipped_checks:
+            verdict = "inconclusive"
+            verified = False
+            confidence = 1.0
+            reasons.append(
+                "One or more required project checks "
+                "were skipped."
             )
 
         elif not request.static_target_resolved:
@@ -117,12 +132,6 @@ class UnifiedFixVerificationEvaluator:
                 "The supplied replay result cannot prove "
                 "that the fix is effective."
             )
-
-        skipped_checks = [
-            check.name
-            for check in request.project_checks
-            if check.status == "skipped"
-        ]
 
         if skipped_checks:
             reasons.append(

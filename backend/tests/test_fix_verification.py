@@ -171,7 +171,7 @@ def test_reports_inconclusive_replay() -> None:
     assert result.verified is False
 
 
-def test_skipped_check_does_not_claim_it_passed() -> None:
+def test_skipped_check_is_inconclusive() -> None:
     result = (
         UnifiedFixVerificationEvaluator()
         .evaluate(
@@ -190,7 +190,9 @@ def test_skipped_check_does_not_claim_it_passed() -> None:
         )
     )
 
-    assert result.verdict == "verified"
+    assert result.verdict == "inconclusive"
+    assert result.verified is False
+    assert result.project_checks_passed is False
     assert any(
         "skipped project checks"
         in reason.lower()

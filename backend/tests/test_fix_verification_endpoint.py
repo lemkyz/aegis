@@ -101,3 +101,23 @@ def test_fix_verification_endpoint_validates_check_status() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_fix_verification_endpoint_does_not_verify_skipped_check() -> None:
+    payload = _payload()
+    payload["project_checks"][1][
+        "status"
+    ] = "skipped"
+
+    response = client.post(
+        "/v1/validation/fix-verification",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["verdict"] == "inconclusive"
+    assert body["verified"] is False
+    assert body["project_checks_passed"] is False
