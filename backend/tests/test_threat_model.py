@@ -675,3 +675,113 @@ def validated_fetch(target):
         "hostname is parsed" in control.lower()
         for control in controls
     )
+
+
+def test_command_injection_reason_uses_proven_data_flow() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="command.py",
+            language="python",
+            code="""
+import os
+
+
+def execute(request):
+    raw_command = request.args.get("command")
+    command = raw_command.strip()
+    return os.system(command)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "command_injection"
+    )
+
+    assert threat.exploitability == "confirmed"
+    assert any(
+        "source-to-sink data-flow edge proves"
+        in reason.lower()
+        for reason in threat.exploitability_reasons
+    )
+
+    assert any(
+        edge.target in threat.source_node_ids
+        and edge.relationship == "data_flow"
+        for edge in result.attack_surface_edges
+    )
+
+
+def test_ssrf_graph_proof_raises_confidence() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="ssrf.py",
+            language="python",
+            code="""
+import requests
+
+
+def fetch(request):
+    raw_url = request.args.get("url")
+    target = raw_url.strip()
+    return requests.get(target)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "ssrf"
+    )
+
+    assert threat.exploitability == "likely"
+    assert threat.exploitability_confidence >= 0.95
+    assert any(
+        "source-to-sink data-flow edge proves"
+        in reason.lower()
+        for reason in threat.exploitability_reasons
+    )
+
+
+def test_unrelated_nearby_input_is_not_graph_proof() -> None:
+    files = [
+        AttackSurfaceFile(
+            filename="network.py",
+            language="python",
+            code="""
+import requests
+
+
+def fetch(request):
+    ignored = request.args.get("url")
+    target = "https://api.example.com"
+    return requests.get(target)
+""".strip(),
+        ),
+    ]
+
+    result = ThreatModeler().scan(files)
+
+    threat = next(
+        threat
+        for threat in result.threats
+        if threat.category == "ssrf"
+    )
+
+    assert not any(
+        "source-to-sink data-flow edge proves"
+        in reason.lower()
+        for reason in threat.exploitability_reasons
+    )
+
+    assert not any(
+        edge.relationship == "data_flow"
+        for edge in result.attack_surface_edges
+    )

@@ -2,6 +2,7 @@ import hashlib
 import re
 
 from aegis.schemas.attack_surface import (
+    AttackSurfaceEdge,
     AttackSurfaceFile,
     AttackSurfaceNode,
 )
@@ -46,6 +47,7 @@ class ThreatModeler:
         threats = self._build_threats(
             attack_surface.nodes,
             files_by_name,
+            attack_surface.edges,
         )
 
         return ThreatModelScanResponse(
@@ -232,6 +234,7 @@ class ThreatModeler:
         self,
         nodes: list[AttackSurfaceNode],
         files_by_name: dict[str, AttackSurfaceFile],
+        edges: list[AttackSurfaceEdge],
     ) -> list[ThreatFinding]:
         threats: list[ThreatFinding] = []
 
@@ -254,6 +257,7 @@ class ThreatModeler:
                         node=node,
                         context=context,
                         nodes=nodes,
+                        edges=edges,
                     )
                 )
 
@@ -852,6 +856,18 @@ class ThreatModeler:
         return parameters
 
     @staticmethod
+    def _has_proven_data_flow(
+        *,
+        node: AttackSurfaceNode,
+        edges: list[AttackSurfaceEdge],
+    ) -> bool:
+        return any(
+            edge.target == node.id
+            and edge.relationship == "data_flow"
+            for edge in edges
+        )
+
+    @staticmethod
     def _has_nearby_user_input(
         node: AttackSurfaceNode,
         nodes: list[AttackSurfaceNode],
@@ -874,12 +890,19 @@ class ThreatModeler:
         node: AttackSurfaceNode,
         context: str,
         nodes: list[AttackSurfaceNode],
+        edges: list[AttackSurfaceEdge],
     ) -> ThreatFinding:
         lowered = context.lower()
 
         has_user_input = self._has_nearby_user_input(
             node,
             nodes,
+        )
+        has_proven_data_flow = (
+            self._has_proven_data_flow(
+                node=node,
+                edges=edges,
+            )
         )
         has_direct_parameter_flow = (
             self._has_direct_parameter_flow(
@@ -919,19 +942,28 @@ class ThreatModeler:
             if (
                 shell_execution
                 and (
-                    has_user_input
+                    has_proven_data_flow
+                    or has_user_input
                     or has_direct_parameter_flow
                     or has_intermediate_parameter_flow
                 )
             ):
                 exploitability = "confirmed"
                 exploitability_confidence = 0.96
-                reasons.extend(
-                    [
-                        "Attacker-controlled input was detected near process execution.",
-                        "The process API invokes a shell or command-string execution path.",
-                    ]
-                )
+                if has_proven_data_flow:
+                    reasons.extend(
+                        [
+                            "A source-to-sink data-flow edge proves that attacker-controlled input reaches process execution.",
+                            "The process API invokes a shell or command-string execution path.",
+                        ]
+                    )
+                else:
+                    reasons.extend(
+                        [
+                            "Attacker-controlled input was detected near process execution.",
+                            "The process API invokes a shell or command-string execution path.",
+                        ]
+                    )
             elif shell_execution:
                 exploitability = "likely"
                 exploitability_confidence = 0.88
@@ -968,15 +1000,29 @@ class ThreatModeler:
                 )
             )
 
-            if dynamic_sql and has_user_input:
+            if (
+                dynamic_sql
+                and (
+                    has_proven_data_flow
+                    or has_user_input
+                )
+            ):
                 exploitability = "confirmed"
                 exploitability_confidence = 0.94
-                reasons.extend(
-                    [
-                        "Request-controlled input was detected near the database operation.",
-                        "The query is dynamically constructed or executed without parameters.",
-                    ]
-                )
+                if has_proven_data_flow:
+                    reasons.extend(
+                        [
+                            "A source-to-sink data-flow edge proves that attacker-controlled input reaches the database operation.",
+                            "The query is dynamically constructed or executed without parameters.",
+                        ]
+                    )
+                else:
+                    reasons.extend(
+                        [
+                            "Request-controlled input was detected near the database operation.",
+                            "The query is dynamically constructed or executed without parameters.",
+                        ]
+                    )
             elif dynamic_sql:
                 exploitability = "likely"
                 exploitability_confidence = 0.85
@@ -1001,7 +1047,16 @@ class ThreatModeler:
             )
 
         elif threat.category == "path_traversal":
-            if has_user_input:
+            if has_proven_data_flow:
+                exploitability = "likely"
+                exploitability_confidence = 0.94
+                reasons.extend(
+                    [
+                        "A source-to-sink data-flow edge proves that attacker-controlled input reaches the filesystem operation.",
+                        "No effective root-containment control was detected.",
+                    ]
+                )
+            elif has_user_input:
                 exploitability = "likely"
                 exploitability_confidence = 0.89
                 reasons.extend(
@@ -1025,7 +1080,16 @@ class ThreatModeler:
             )
 
         elif threat.category == "ssrf":
-            if has_user_input:
+            if has_proven_data_flow:
+                exploitability = "likely"
+                exploitability_confidence = 0.95
+                reasons.extend(
+                    [
+                        "A source-to-sink data-flow edge proves that attacker-controlled input reaches the outbound request.",
+                        "No host or network-destination allowlist was detected.",
+                    ]
+                )
+            elif has_user_input:
                 exploitability = "likely"
                 exploitability_confidence = 0.91
                 reasons.extend(
