@@ -20,6 +20,8 @@ from aegis.schemas.validation import (
     ValidationExecutionPlanResponse,
     DynamicValidationEvidenceRequest,
     DynamicValidationEvidenceResponse,
+    ValidationReplayCompareRequest,
+    ValidationReplayCompareResponse,
     ValidationExecutionRequest,
     ValidationExecutionResult,
     ValidationPlanRequest,
@@ -47,6 +49,9 @@ from aegis.security.validation_runner import (
 from aegis.security.validation_evidence import (
     DynamicValidationEvaluator,
 )
+from aegis.security.validation_replay import (
+    ValidationReplayComparator,
+)
 
 
 settings = get_settings()
@@ -72,6 +77,9 @@ validation_runner = ValidationRunner(
 )
 dynamic_validation_evaluator = (
     DynamicValidationEvaluator()
+)
+validation_replay_comparator = (
+    ValidationReplayComparator()
 )
 
 
@@ -278,6 +286,31 @@ async def evaluate_validation_evidence(
             detail=(
                 "Dynamic validation evidence "
                 f"evaluation failed: {exc}"
+            ),
+        ) from exc
+
+
+@app.post(
+    "/v1/validation/replay/compare",
+    response_model=ValidationReplayCompareResponse,
+)
+async def compare_validation_replay(
+    request: ValidationReplayCompareRequest,
+) -> ValidationReplayCompareResponse:
+    """
+    Compare dynamic evidence captured before and after
+    a secure fix using the same threat identity.
+    """
+    try:
+        return validation_replay_comparator.compare(
+            request
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Dynamic validation replay comparison "
+                f"failed: {exc}"
             ),
         ) from exc
 

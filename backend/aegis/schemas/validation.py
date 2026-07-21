@@ -265,3 +265,39 @@ class DynamicValidationEvidenceResponse(BaseModel):
     duration_ms: int = Field(
         ge=0,
     )
+
+
+DynamicReplayVerdict = Literal[
+    "fixed",
+    "still_exploitable",
+    "inconclusive",
+]
+
+
+class ValidationReplayCompareRequest(BaseModel):
+    before: DynamicValidationEvidenceResponse
+    after: DynamicValidationEvidenceResponse
+
+
+class ValidationReplayCompareResponse(BaseModel):
+    comparator: str
+
+    threat_id: str
+    category: ValidationTestType
+    verdict: DynamicReplayVerdict
+
+    fixed: bool
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    before_verdict: DynamicValidationVerdict
+    after_verdict: DynamicValidationVerdict
+
+    reasons: list[str] = Field(
+        default_factory=list,
+    )
+    denials: list[str] = Field(
+        default_factory=list,
+    )
