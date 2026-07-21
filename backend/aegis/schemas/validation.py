@@ -159,3 +159,44 @@ class ValidationExecutionPlanResponse(BaseModel):
     denials: list[str] = Field(
         default_factory=list,
     )
+
+
+ValidationRunStatus = Literal[
+    "completed",
+    "failed",
+    "timed_out",
+    "runtime_unavailable",
+    "rejected",
+]
+
+
+class ValidationExecutionRequest(BaseModel):
+    plan: ValidationPlanRequest
+
+
+class ValidationExecutionResult(BaseModel):
+    runner: str
+    status: ValidationRunStatus
+
+    runtime_executable: str | None = None
+    started: bool
+    timed_out: bool
+
+    exit_code: int | None = None
+    duration_ms: int = Field(
+        ge=0,
+    )
+
+    stdout: str = ""
+    stderr: str = ""
+
+    argv: list[str] = Field(
+        default_factory=list,
+    )
+
+    reasons: list[str] = Field(
+        default_factory=list,
+    )
+    denials: list[str] = Field(
+        default_factory=list,
+    )
