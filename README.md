@@ -28,9 +28,11 @@ It is one of three states:
 
 Most secure coding workflows end too early.
 
-A scanner reports a dangerous pattern.  
-A patch removes the pattern.  
-The warning disappears.  
+A scanner reports a dangerous pattern.
+
+A patch removes the pattern.
+
+The warning disappears.
 Everyone moves on.
 
 But the original behavior may still be exploitable.
