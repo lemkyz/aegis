@@ -31,3 +31,12 @@ backend/.env
 .env
 *.env
 backend/scanners/eslint/node_modules/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.json
