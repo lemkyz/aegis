@@ -1,0 +1,86 @@
+name: Bug report
+description: Report reproducible behavior that is incorrect or unexpected
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+
+        Do not use this form for security vulnerabilities. Follow SECURITY.md instead.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the problem clearly.
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest reliable reproduction.
+      placeholder: |
+        1. Start the backend
+        2. Open...
+        3. Run...
+        4. Observe...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - VS Code extension
+        - Backend API
+        - Static analysis
+        - Dynamic validation
+        - Sandbox runner
+        - Fix verification
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include operating system, Python version, container runtime, VS Code version, and relevant tool versions.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Remove secrets and private source code before posting.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: I removed secrets, credentials, and private source code.
+          required: true
+        - label: This is not a private security vulnerability report.
+          required: true

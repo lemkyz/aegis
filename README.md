@@ -318,6 +318,10 @@ Use Aegis only on code and systems you own or have explicit permission to test.
 
 Do not use its validation features against third-party infrastructure without authorization.
 
+## License
+
+Aegis is licensed under the [Apache License 2.0](LICENSE).
+
 ---
 
 <div align="center">

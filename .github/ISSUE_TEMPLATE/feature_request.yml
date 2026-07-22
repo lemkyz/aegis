@@ -1,0 +1,53 @@
+name: Feature request
+description: Propose a focused improvement to Aegis
+title: "[proposal] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the concrete problem before proposing a solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain how the feature should work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security boundaries
+      description: Explain any effects on authorization, execution, evidence, sandboxing, or verification verdicts.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe simpler approaches or workarounds.
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: How should the behavior be tested and proven correct?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: This proposal supports defensive and authorized security work.
+          required: true
+        - label: I searched existing issues and discussions.
+          required: true
