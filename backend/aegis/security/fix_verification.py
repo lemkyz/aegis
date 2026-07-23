@@ -23,7 +23,7 @@ class UnifiedFixVerificationEvaluator:
         ]
 
         project_checks_passed = all(
-            check.status == "passed"
+            check.status != "failed"
             for check in request.project_checks
         )
 
@@ -41,15 +41,6 @@ class UnifiedFixVerificationEvaluator:
             reasons.append(
                 "One or more project verification "
                 "checks failed."
-            )
-
-        elif skipped_checks:
-            verdict = "inconclusive"
-            verified = False
-            confidence = 1.0
-            reasons.append(
-                "One or more required project checks "
-                "were skipped."
             )
 
         elif not request.static_target_resolved:

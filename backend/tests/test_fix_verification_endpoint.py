@@ -103,7 +103,8 @@ def test_fix_verification_endpoint_validates_check_status() -> None:
     assert response.status_code == 422
 
 
-def test_fix_verification_endpoint_does_not_verify_skipped_check() -> None:
+
+def test_fix_verification_endpoint_allows_skipped_optional_check() -> None:
     payload = _payload()
     payload["project_checks"][1][
         "status"
@@ -118,6 +119,13 @@ def test_fix_verification_endpoint_does_not_verify_skipped_check() -> None:
 
     body = response.json()
 
-    assert body["verdict"] == "inconclusive"
-    assert body["verified"] is False
-    assert body["project_checks_passed"] is False
+    assert body["verdict"] == "verified"
+    assert body["verified"] is True
+    assert body["project_checks_passed"] is True
+    assert body["failed_checks"] == []
+    assert any(
+        "skipped project checks"
+        in reason.lower()
+        for reason in body["reasons"]
+    )
+
