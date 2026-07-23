@@ -5473,6 +5473,10 @@ function compareSecurityVerificationResults(
       (finding) =>
         !baselineIdentities.has(
           securityFindingIdentity(finding),
+        ) &&
+        !isExpectedCommandInjectionMitigation(
+          finding,
+          targetRuleIds,
         ),
     );
 
@@ -5490,6 +5494,40 @@ function compareSecurityVerificationResults(
     introducedFindings,
     unchangedFindings,
   };
+}
+
+function isExpectedCommandInjectionMitigation(
+  finding: SecurityFinding,
+  targetRuleIds: string[],
+): boolean {
+  const fixesCommandInjection =
+    targetRuleIds.some((ruleId) =>
+      ruleId
+        .toLowerCase()
+        .includes("command-injection"),
+    );
+
+  if (!fixesCommandInjection) {
+    return false;
+  }
+
+  const ruleIds = finding.scanner_evidence.map(
+    (evidence) =>
+      evidence.rule_id.toLowerCase(),
+  );
+
+  if (ruleIds.length === 0) {
+    return false;
+  }
+
+  return ruleIds.every(
+    (ruleId) =>
+      ruleId ===
+        "bandit.python.b603.subprocess-without-shell-equals-true" ||
+      ruleId.endsWith(
+        ".b603.subprocess-without-shell-equals-true",
+      ),
+  );
 }
 
 function securityFindingIdentity(

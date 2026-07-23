@@ -2710,7 +2710,8 @@ function compareSecurityVerificationResults(analyzedResponse, baselineResponse, 
     const targetRuleIds = Array.from(new Set(analyzedResponse.findings.flatMap((finding) => finding.scanner_evidence.map((evidence) => evidence.rule_id))));
     const baselineIdentities = new Set(baselineResponse.findings.map(securityFindingIdentity));
     const remainingTargetFindings = verificationResponse.findings.filter((finding) => finding.scanner_evidence.some((evidence) => targetRuleIds.includes(evidence.rule_id)));
-    const introducedFindings = verificationResponse.findings.filter((finding) => !baselineIdentities.has(securityFindingIdentity(finding)));
+    const introducedFindings = verificationResponse.findings.filter((finding) => !baselineIdentities.has(securityFindingIdentity(finding)) &&
+        !isExpectedCommandInjectionMitigation(finding, targetRuleIds));
     const unchangedFindings = verificationResponse.findings.filter((finding) => baselineIdentities.has(securityFindingIdentity(finding)));
     return {
         targetRuleIds,
@@ -2718,6 +2719,21 @@ function compareSecurityVerificationResults(analyzedResponse, baselineResponse, 
         introducedFindings,
         unchangedFindings,
     };
+}
+function isExpectedCommandInjectionMitigation(finding, targetRuleIds) {
+    const fixesCommandInjection = targetRuleIds.some((ruleId) => ruleId
+        .toLowerCase()
+        .includes("command-injection"));
+    if (!fixesCommandInjection) {
+        return false;
+    }
+    const ruleIds = finding.scanner_evidence.map((evidence) => evidence.rule_id.toLowerCase());
+    if (ruleIds.length === 0) {
+        return false;
+    }
+    return ruleIds.every((ruleId) => ruleId ===
+        "bandit.python.b603.subprocess-without-shell-equals-true" ||
+        ruleId.endsWith(".b603.subprocess-without-shell-equals-true"));
 }
 function securityFindingIdentity(finding) {
     const ruleIds = finding.scanner_evidence
