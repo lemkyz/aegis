@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from aegis.schemas.claims import SecurityClaim
+
 
 Severity = Literal["info", "low", "medium", "high", "critical"]
 AnalysisStatus = Literal["completed", "skipped", "fallback"]
@@ -77,3 +79,6 @@ class AnalyzeCodeResponse(BaseModel):
     analysis_status: AnalysisStatus = "completed"
     result_source: ResultSource = "scanner"
     findings: list[SecurityFinding]
+    claims: list[SecurityClaim] = Field(
+        default_factory=list,
+    )

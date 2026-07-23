@@ -1,5 +1,6 @@
 import re
 from aegis.models.nvidia import NvidiaModelClient
+from aegis.security.claim_adapter import finding_to_claim
 from aegis.security.config_secrets import ConfigSecretScanner
 from aegis.security.redaction import SecretRedactor
 from aegis.security.secrets import SecretIntelligenceEngine
@@ -9,6 +10,7 @@ from aegis.schemas.analysis import (
     ScannerEvidence,
     SecurityFinding,
 )
+from aegis.schemas.claims import SecurityClaim
 from aegis.security.bandit import BanditScanner
 from aegis.security.eslint import EslintSecurityScanner
 from aegis.security.orchestrator import SecurityScannerOrchestrator
@@ -178,6 +180,10 @@ class SecurityAnalyzer:
             analysis_status="skipped",
             result_source="scanner",
             findings=findings,
+            claims=self._build_claims(
+                findings=findings,
+                filename=request.filename,
+            ),
         )
 
     async def deep_analyze(
@@ -217,6 +223,7 @@ class SecurityAnalyzer:
                 analysis_status="skipped",
                 result_source="scanner",
                 findings=[],
+                claims=[],
             )
 
         redaction_session = self.redactor.create_session()
@@ -294,6 +301,10 @@ class SecurityAnalyzer:
                 analysis_status="fallback",
                 result_source="scanner_fallback",
                 findings=findings,
+                claims=self._build_claims(
+                    findings=findings,
+                    filename=request.filename,
+                ),
             )
 
         print(
@@ -309,7 +320,25 @@ class SecurityAnalyzer:
             analysis_status="completed",
             result_source="ai",
             findings=findings,
+            claims=self._build_claims(
+                findings=findings,
+                filename=request.filename,
+            ),
         )
+
+    @staticmethod
+    def _build_claims(
+        *,
+        findings: list[SecurityFinding],
+        filename: str,
+    ) -> list[SecurityClaim]:
+        return [
+            finding_to_claim(
+                finding,
+                filename=filename,
+            )
+            for finding in findings
+        ]
 
     async def analyze(
         self,
