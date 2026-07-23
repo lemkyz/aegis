@@ -91,6 +91,7 @@ class DynamicValidationEvaluator:
         return DynamicValidationEvidenceResponse(
             evaluator=self.evaluator,
             threat_id=request.threat_id,
+            claim_id=request.claim_id,
             category=request.category,
             verdict=verdict,
             dynamically_confirmed=(

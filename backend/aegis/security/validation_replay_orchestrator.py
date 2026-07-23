@@ -75,6 +75,7 @@ class ValidationReplayOrchestrator:
         return ValidationReplayResponse(
             orchestrator=self.orchestrator,
             threat_id=request.threat_id,
+            claim_id=request.claim_id,
             category=request.category,
             before_execution=(
                 request.before_execution
@@ -94,6 +95,7 @@ class ValidationReplayOrchestrator:
         return self._evaluator.evaluate(
             DynamicValidationEvidenceRequest(
                 threat_id=request.threat_id,
+                claim_id=request.claim_id,
                 category=request.category,
                 execution=execution,
                 success_criteria=(

@@ -29,6 +29,12 @@ class ValidationReplayComparator:
                 "same validation category."
             )
 
+        if before.claim_id != after.claim_id:
+            denials.append(
+                "Before and after evidence must reference "
+                "the same claim identifier."
+            )
+
         if denials:
             return self._response(
                 request=request,
@@ -138,6 +144,7 @@ class ValidationReplayComparator:
         return ValidationReplayCompareResponse(
             comparator=self.comparator,
             threat_id=request.before.threat_id,
+            claim_id=request.before.claim_id,
             category=request.before.category,
             verdict=verdict,
             fixed=fixed,

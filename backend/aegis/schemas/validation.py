@@ -234,6 +234,11 @@ class DynamicValidationEvidenceRequest(BaseModel):
         min_length=1,
         max_length=300,
     )
+    claim_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+    )
     category: ValidationTestType
 
     execution: ValidationExecutionResult
@@ -244,6 +249,11 @@ class DynamicValidationEvidenceResponse(BaseModel):
     evaluator: str
 
     threat_id: str
+    claim_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+    )
     category: ValidationTestType
     verdict: DynamicValidationVerdict
 
@@ -283,6 +293,11 @@ class ValidationReplayCompareResponse(BaseModel):
     comparator: str
 
     threat_id: str
+    claim_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+    )
     category: ValidationTestType
     verdict: DynamicReplayVerdict
 
@@ -308,6 +323,11 @@ class ValidationReplayRequest(BaseModel):
         min_length=1,
         max_length=300,
     )
+    claim_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+    )
     category: ValidationTestType
 
     plan: ValidationPlanRequest
@@ -320,6 +340,11 @@ class ValidationReplayResponse(BaseModel):
     orchestrator: str
 
     threat_id: str
+    claim_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+    )
     category: ValidationTestType
 
     before_execution: ValidationExecutionResult
@@ -377,6 +402,11 @@ class UnifiedFixVerificationResponse(BaseModel):
     evaluator: str
 
     threat_id: str
+    claim_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+    )
     category: ValidationTestType
 
     verdict: FixVerificationVerdict

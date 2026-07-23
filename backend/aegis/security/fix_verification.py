@@ -134,6 +134,7 @@ class UnifiedFixVerificationEvaluator:
         return UnifiedFixVerificationResponse(
             evaluator=self.evaluator,
             threat_id=request.replay.threat_id,
+            claim_id=request.replay.claim_id,
             category=request.replay.category,
             verdict=verdict,
             verified=verified,
