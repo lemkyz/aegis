@@ -2,19 +2,11 @@ from __future__ import annotations
 
 import subprocess
 
-from app import build_command
+from app import run_command
 
 
 MARKER = "AEGIS_EXPLOIT_CONFIRMED"
 
-# The marker is deliberately encoded as shell octal escapes.
-#
-# In the vulnerable implementation, the injected second command runs
-# and emits MARKER.
-#
-# In a safely quoted implementation, the payload is treated as one
-# literal argument or command token. Its text does not contain MARKER,
-# so merely echoing or reporting the payload cannot create false proof.
 PAYLOAD = (
     r"hello; printf "
     r"'\101\105\107\111\123\137"
@@ -24,17 +16,8 @@ PAYLOAD = (
 
 
 def run_validation() -> bool:
-    generated_command = build_command(PAYLOAD)
-
     try:
-        completed = subprocess.run(
-            generated_command,
-            shell=True,
-            text=True,
-            capture_output=True,
-            timeout=3,
-            check=False,
-        )
+        completed = run_command(PAYLOAD)
     except subprocess.TimeoutExpired:
         return False
 

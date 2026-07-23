@@ -390,11 +390,103 @@ class SecurityAnalyzer:
         source_code: str,
     ) -> str | None:
         """
-        Produces a conservative patch only for a narrowly understood
-        Semgrep SQL-injection pattern.
+        Produces conservative deterministic patches for narrowly
+        understood Semgrep patterns.
 
         Unsupported or ambiguous code returns None.
         """
+
+        if (
+            rule_id
+            == "aegis.python.command-injection.subprocess-shell"
+        ):
+            assignment_pattern = re.compile(
+                r"""(?mx)
+                ^
+                (?P<indent>[ \t]*)
+                (?P<command>[A-Za-z_][A-Za-z0-9_]*)
+                \s*=\s*f
+                (?P<outer_quote>["'])
+                printf[ ]
+                (?P<format_quote>["'])
+                %s
+                (?P=format_quote)
+                [ ]
+                \{
+                (?P<parameter>[A-Za-z_][A-Za-z0-9_]*)
+                \}
+                (?P=outer_quote)
+                [ \t]*
+                $
+                """
+            )
+
+            assignment = assignment_pattern.search(
+                source_code
+            )
+
+            if assignment is None:
+                return None
+
+            command_name = assignment.group("command")
+            parameter_name = assignment.group("parameter")
+            indent = assignment.group("indent")
+
+            shell_matches = re.findall(
+                r"\bshell\s*=\s*True\b",
+                source_code,
+            )
+
+            if len(shell_matches) != 1:
+                return None
+
+            command_use_pattern = re.compile(
+                rf"""(?x)
+                subprocess\.run
+                \(
+                \s*
+                {re.escape(command_name)}
+                \s*,
+                [\s\S]*?
+                shell\s*=\s*True
+                [\s\S]*?
+                \)
+                """
+            )
+
+            if (
+                command_use_pattern.search(source_code)
+                is None
+            ):
+                return None
+
+            secure_assignment = (
+                f'{indent}{command_name} = '
+                f'["printf", "%s", {parameter_name}]'
+            )
+
+            patched_code = (
+                source_code[:assignment.start()]
+                + secure_assignment
+                + source_code[assignment.end():]
+            )
+
+            patched_code, shell_replacements = (
+                re.subn(
+                    r"\bshell\s*=\s*True\b",
+                    "shell=False",
+                    patched_code,
+                    count=1,
+                )
+            )
+
+            if (
+                shell_replacements != 1
+                or patched_code == source_code
+            ):
+                return None
+
+            return patched_code
 
         if (
             rule_id

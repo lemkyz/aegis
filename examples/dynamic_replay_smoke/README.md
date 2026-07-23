@@ -1,15 +1,18 @@
 # Aegis Dynamic Replay Smoke Fixture
 
-This intentionally vulnerable fixture tests Aegis dynamic
-replay without executing a real shell command.
+This intentionally vulnerable local fixture exercises the full
+Aegis fix-verification flow.
 
-The vulnerable implementation should print:
+The vulnerable implementation constructs a command from untrusted
+input and executes it through a shell.
+
+The authorized sandbox validator should initially print:
 
     AEGIS_EXPLOIT_CONFIRMED
 
-After a secure fix, it should print:
+After Aegis applies the secure patch, the same replay should print:
 
     AEGIS_SAFE_BEHAVIOR
 
-The validator only inspects the generated command string.
-It never invokes a shell.
+The fixture must only be used in the isolated, no-network Aegis
+validation container.

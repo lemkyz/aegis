@@ -1,19 +1,33 @@
 from __future__ import annotations
 
+import subprocess
 
-def build_command(user_input: str) -> str:
+
+def run_command(
+    user_input: str,
+) -> subprocess.CompletedProcess[str]:
     """
     Intentionally vulnerable training fixture.
 
-    This returns a shell-like command string but never
-    executes it.
+    Untrusted input is interpolated into a command string
+    and executed through a shell.
     """
-    return "printf SAFE && " + user_input
+    command = f'printf "%s" {user_input}'
+
+    return subprocess.run(
+        command,
+        shell=True,
+        text=True,
+        capture_output=True,
+        timeout=3,
+        check=False,
+    )
 
 
 def main() -> None:
     value = input("Value: ")
-    print(build_command(value))
+    completed = run_command(value)
+    print(completed.stdout, end="")
 
 
 if __name__ == "__main__":
