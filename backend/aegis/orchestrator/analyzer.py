@@ -16,7 +16,11 @@ from aegis.security.semgrep import SemgrepScanner
 
 
 class SecurityAnalyzer:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        fingerprint_key: str,
+    ) -> None:
         self.model_client = NvidiaModelClient()
         self.semgrep_scanner = SemgrepScanner()
         self.bandit_scanner = BanditScanner()
@@ -34,7 +38,9 @@ class SecurityAnalyzer:
 
         self.config_scanner = ConfigSecretScanner()
         self.redactor = SecretRedactor()
-        self.secret_engine = SecretIntelligenceEngine()
+        self.secret_engine = SecretIntelligenceEngine(
+            fingerprint_key=fingerprint_key,
+        )
 
     async def _collect_scanner_evidence(
         self,

@@ -1,4 +1,3 @@
-import os
 import hashlib
 import hmac
 import math
@@ -20,18 +19,20 @@ class SecretIntelligenceEngine:
     fingerprint generation. They are never stored in API responses.
     """
 
-    _fingerprint_key_value = os.getenv(
-        "AEGIS_FINGERPRINT_KEY",
-        "",
-    )
+    def __init__(
+        self,
+        *,
+        fingerprint_key: str,
+    ) -> None:
+        if len(fingerprint_key) < 32:
+            raise ValueError(
+                "fingerprint_key must contain at least "
+                "32 characters."
+            )
 
-    if len(_fingerprint_key_value) < 32:
-        raise RuntimeError(
-            "AEGIS_FINGERPRINT_KEY must be configured with at least "
-            "32 characters before Aegis starts."
+        self._fingerprint_key = fingerprint_key.encode(
+            "utf-8"
         )
-
-    _fingerprint_key = _fingerprint_key_value.encode("utf-8")
 
     _assignment_pattern = re.compile(
         r"""(?ix)
@@ -420,13 +421,12 @@ class SecretIntelligenceEngine:
             for count in counts.values()
         )
 
-    @classmethod
     def _fingerprint(
-        cls,
+        self,
         value: str,
     ) -> str:
         digest = hmac.new(
-            cls._fingerprint_key,
+            self._fingerprint_key,
             value.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()

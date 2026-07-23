@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     app_name: str = "Aegis"
     app_version: str = "0.1.0"
 
+    aegis_fingerprint_key: str = Field(
+        min_length=32,
+    )
+
     nvidia_api_key: str
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_model: str = "openai/gpt-oss-120b"

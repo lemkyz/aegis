@@ -72,7 +72,9 @@ app = FastAPI(
     description="AI-native secure software engineering backend",
 )
 
-analyzer = SecurityAnalyzer()
+analyzer = SecurityAnalyzer(
+    fingerprint_key=settings.aegis_fingerprint_key,
+)
 attack_surface_mapper = AttackSurfaceMapper()
 threat_modeler = ThreatModeler(
     mapper=attack_surface_mapper,
