@@ -3473,6 +3473,57 @@ function preserveIndentation(originalCode, proposedPatch) {
         .map((line) => (line.length > 0 ? `${indentation}${line}` : line))
         .join("\n");
 }
+function buildClaimGraphReport(claims) {
+    const lines = [
+        "## Claim & Evidence Graph",
+        "",
+        `- **Canonical Claims:** ${claims.length}`,
+        "",
+    ];
+    if (claims.length === 0) {
+        lines.push("No canonical security claim was returned by the backend.", "");
+        return lines;
+    }
+    claims.forEach((claim, index) => {
+        const locations = claim.locations.length > 0
+            ? claim.locations
+                .map((location) => `${location.file}:${location.line_start}-${location.line_end}`)
+                .join(", ")
+            : "No source location";
+        const evidenceKinds = Array.from(new Set(claim.evidence.map((evidence) => evidence.source.kind)));
+        lines.push(`### Claim ${index + 1}: ${claim.category}`, "", `- **Claim ID:** \`${escapeMarkdownInlineCode(claim.claim_id)}\``, `- **State:** ${claim.state.replaceAll("_", " ").toUpperCase()}`, `- **Severity:** ${claim.severity.toUpperCase()}`, `- **Confidence:** ${Math.round(claim.confidence * 100)}%`, `- **Locations:** ${locations}`, `- **Evidence Items:** ${claim.evidence.length}`, `- **Evidence Types:** ${evidenceKinds.join(", ") || "None"}`, `- **Relationships:** ${claim.relationships.length}`, "", claim.statement, "");
+        if (claim.evidence.length > 0) {
+            lines.push("#### Evidence Nodes", "");
+            claim.evidence.forEach((evidence) => {
+                const sourceLabel = [
+                    evidence.source.name,
+                    evidence.source.rule_id,
+                ]
+                    .filter(Boolean)
+                    .join(" / ");
+                lines.push(`- **${evidence.source.kind} — ${sourceLabel || "Unknown source"}**`, `  - Evidence ID: \`${escapeMarkdownInlineCode(evidence.evidence_id)}\``, `  - Confidence: ${Math.round(evidence.confidence * 100)}%`, `  - ${evidence.summary}`);
+                evidence.details.forEach((detail) => {
+                    lines.push(`  - ${detail.replace(/\n/g, " ")}`);
+                });
+            });
+            lines.push("");
+        }
+        if (claim.relationships.length > 0) {
+            lines.push("#### Evidence Relationships", "");
+            claim.relationships.forEach((relationship) => {
+                lines.push(`- **${relationship.kind}**: `
+                    + `\`${escapeMarkdownInlineCode(relationship.source_evidence_id)}\``
+                    + " → "
+                    + `\`${escapeMarkdownInlineCode(relationship.target_evidence_id)}\``
+                    + (relationship.reason
+                        ? ` — ${relationship.reason}`
+                        : ""));
+            });
+            lines.push("");
+        }
+    });
+    return lines;
+}
 function buildMarkdownReport(result, mode) {
     const modeLabel = mode === "fast" ? "Fast Scan" : "Deep Analysis";
     const lines = [
@@ -3487,11 +3538,13 @@ function buildMarkdownReport(result, mode) {
         `- **Result Source:** ${(result.result_source ?? "scanner").replaceAll("_", " ").toUpperCase()}`,
         `- **Patch Available:** ${findFirstPatch(result) ? "YES" : "NO"}`,
         `- **Findings:** ${result.findings.length}`,
+        `- **Canonical Claims:** ${(result.claims ?? []).length}`,
         "",
     ];
     if (mode === "fast") {
         lines.push("> Fast Scan displays local scanner evidence only. Run Deep Analysis for AI review and a proposed patch.", "");
     }
+    lines.push(...buildClaimGraphReport(result.claims ?? []));
     if (result.findings.length === 0) {
         lines.push("No meaningful security finding was detected.", "", "> This result does not guarantee that the code is completely secure.");
         return lines.join("\n");

@@ -84,6 +84,82 @@ interface SecurityFinding {
   proposed_patch: string | null;
 }
 
+type ClaimState =
+  | "suspected"
+  | "supported"
+  | "confirmed"
+  | "mitigated"
+  | "verified_fixed"
+  | "false_positive"
+  | "accepted_risk"
+  | "inconclusive";
+
+type EvidenceKind =
+  | "scanner"
+  | "semantic_analysis"
+  | "data_flow"
+  | "runtime_execution"
+  | "dynamic_probe"
+  | "test_result"
+  | "patch_diff"
+  | "user_decision"
+  | "model_review";
+
+interface ClaimCodeLocation {
+  file: string;
+  line_start: number;
+  line_end: number;
+  symbol: string | null;
+}
+
+interface ClaimEvidenceSource {
+  kind: EvidenceKind;
+  name: string;
+  rule_id: string | null;
+  version: string | null;
+}
+
+interface ClaimEvidenceItem {
+  evidence_id: string;
+  source: ClaimEvidenceSource;
+  summary: string;
+  confidence: number;
+  locations: ClaimCodeLocation[];
+  details: string[];
+  observed_at: string | null;
+}
+
+interface ClaimEvidenceRelationship {
+  relationship_id: string;
+  source_evidence_id: string;
+  target_evidence_id: string;
+  kind:
+    | "supports"
+    | "contradicts"
+    | "corroborates"
+    | "derived_from"
+    | "verifies"
+    | "mitigates";
+  reason: string | null;
+}
+
+interface SecurityClaim {
+  schema_version: string;
+  claim_id: string;
+  statement: string;
+  category: string;
+  severity: Severity;
+  confidence: number;
+  state: ClaimState;
+  cwe: string[];
+  owasp: string[];
+  locations: ClaimCodeLocation[];
+  evidence: ClaimEvidenceItem[];
+  relationships: ClaimEvidenceRelationship[];
+  remediation: string | null;
+  proposed_patch: string | null;
+}
+
 interface AnalyzeResponse {
   filename: string;
   language: string;
@@ -92,6 +168,7 @@ interface AnalyzeResponse {
   analysis_status?: "completed" | "skipped" | "fallback";
   result_source?: "scanner" | "ai" | "scanner_fallback";
   findings: SecurityFinding[];
+  claims?: SecurityClaim[];
 }
 
 interface LastAnalysis {
@@ -6859,6 +6936,111 @@ function preserveIndentation(
     .join("\n");
 }
 
+function buildClaimGraphReport(
+  claims: SecurityClaim[],
+): string[] {
+  const lines: string[] = [
+    "## Claim & Evidence Graph",
+    "",
+    `- **Canonical Claims:** ${claims.length}`,
+    "",
+  ];
+
+  if (claims.length === 0) {
+    lines.push(
+      "No canonical security claim was returned by the backend.",
+      "",
+    );
+
+    return lines;
+  }
+
+  claims.forEach((claim, index) => {
+    const locations = claim.locations.length > 0
+      ? claim.locations
+          .map(
+            (location) =>
+              `${location.file}:${location.line_start}-${location.line_end}`,
+          )
+          .join(", ")
+      : "No source location";
+
+    const evidenceKinds = Array.from(
+      new Set(
+        claim.evidence.map(
+          (evidence) => evidence.source.kind,
+        ),
+      ),
+    );
+
+    lines.push(
+      `### Claim ${index + 1}: ${claim.category}`,
+      "",
+      `- **Claim ID:** \`${escapeMarkdownInlineCode(claim.claim_id)}\``,
+      `- **State:** ${claim.state.replaceAll("_", " ").toUpperCase()}`,
+      `- **Severity:** ${claim.severity.toUpperCase()}`,
+      `- **Confidence:** ${Math.round(claim.confidence * 100)}%`,
+      `- **Locations:** ${locations}`,
+      `- **Evidence Items:** ${claim.evidence.length}`,
+      `- **Evidence Types:** ${evidenceKinds.join(", ") || "None"}`,
+      `- **Relationships:** ${claim.relationships.length}`,
+      "",
+      claim.statement,
+      "",
+    );
+
+    if (claim.evidence.length > 0) {
+      lines.push("#### Evidence Nodes", "");
+
+      claim.evidence.forEach((evidence) => {
+        const sourceLabel = [
+          evidence.source.name,
+          evidence.source.rule_id,
+        ]
+          .filter(Boolean)
+          .join(" / ");
+
+        lines.push(
+          `- **${evidence.source.kind} — ${sourceLabel || "Unknown source"}**`,
+          `  - Evidence ID: \`${escapeMarkdownInlineCode(evidence.evidence_id)}\``,
+          `  - Confidence: ${Math.round(evidence.confidence * 100)}%`,
+          `  - ${evidence.summary}`,
+        );
+
+        evidence.details.forEach((detail) => {
+          lines.push(
+            `  - ${detail.replace(/\n/g, " ")}`,
+          );
+        });
+      });
+
+      lines.push("");
+    }
+
+    if (claim.relationships.length > 0) {
+      lines.push("#### Evidence Relationships", "");
+
+      claim.relationships.forEach((relationship) => {
+        lines.push(
+          `- **${relationship.kind}**: `
+          + `\`${escapeMarkdownInlineCode(relationship.source_evidence_id)}\``
+          + " → "
+          + `\`${escapeMarkdownInlineCode(relationship.target_evidence_id)}\``
+          + (
+            relationship.reason
+              ? ` — ${relationship.reason}`
+              : ""
+          ),
+        );
+      });
+
+      lines.push("");
+    }
+  });
+
+  return lines;
+}
+
 function buildMarkdownReport(
   result: AnalyzeResponse,
   mode: AnalysisMode,
@@ -6878,6 +7060,7 @@ function buildMarkdownReport(
     `- **Result Source:** ${(result.result_source ?? "scanner").replaceAll("_", " ").toUpperCase()}`,
     `- **Patch Available:** ${findFirstPatch(result) ? "YES" : "NO"}`,
     `- **Findings:** ${result.findings.length}`,
+    `- **Canonical Claims:** ${(result.claims ?? []).length}`,
     "",
   ];
 
@@ -6887,6 +7070,12 @@ function buildMarkdownReport(
       "",
     );
   }
+
+  lines.push(
+    ...buildClaimGraphReport(
+      result.claims ?? [],
+    ),
+  );
 
   if (result.findings.length === 0) {
     lines.push(
