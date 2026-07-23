@@ -2115,7 +2115,7 @@ async function runAuthorizedDynamicBaseline() {
             category.value,
         ],
         dry_run: false,
-        timeout_seconds: 10,
+        timeout_seconds: 30,
         memory_limit_mb: 256,
         cpu_limit: 0.5,
         network_policy: "disabled",
