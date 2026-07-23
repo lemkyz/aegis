@@ -37,6 +37,15 @@ def finding_to_claim(
         for evidence in finding.scanner_evidence
     )
 
+    location_identity = sorted(
+        (
+            location.file,
+            location.line_start,
+            location.line_end,
+        )
+        for location in locations
+    )
+
     claim_id = _stable_id(
         "claim",
         normalized_filename,
@@ -44,6 +53,19 @@ def finding_to_claim(
         finding.title,
         ",".join(sorted(finding.cwe)),
         ",".join(scanner_rule_ids),
+        "|".join(
+            (
+                f"{file}:"
+                f"{line_start}:"
+                f"{line_end}"
+            )
+            for (
+                file,
+                line_start,
+                line_end,
+            )
+            in location_identity
+        ),
     )
 
     return SecurityClaim(
