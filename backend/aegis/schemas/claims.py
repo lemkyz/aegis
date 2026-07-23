@@ -1,0 +1,142 @@
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+
+ClaimState = Literal[
+    "suspected",
+    "supported",
+    "confirmed",
+    "mitigated",
+    "verified_fixed",
+    "false_positive",
+    "accepted_risk",
+    "inconclusive",
+]
+
+EvidenceKind = Literal[
+    "scanner",
+    "semantic_analysis",
+    "data_flow",
+    "runtime_execution",
+    "dynamic_probe",
+    "test_result",
+    "patch_diff",
+    "user_decision",
+    "model_review",
+]
+
+EvidenceRelationshipKind = Literal[
+    "supports",
+    "contradicts",
+    "corroborates",
+    "derived_from",
+    "verifies",
+    "mitigates",
+]
+
+
+class CodeLocation(BaseModel):
+    file: str = Field(min_length=1, max_length=1_000)
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    symbol: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_line_range(self) -> "CodeLocation":
+        if self.line_end < self.line_start:
+            raise ValueError(
+                "line_end must be greater than or equal to line_start"
+            )
+
+        return self
+
+
+class EvidenceSource(BaseModel):
+    kind: EvidenceKind
+    name: str = Field(min_length=1, max_length=300)
+    rule_id: str | None = Field(default=None, max_length=500)
+    version: str | None = Field(default=None, max_length=100)
+
+
+class EvidenceItem(BaseModel):
+    evidence_id: str = Field(min_length=1, max_length=300)
+    source: EvidenceSource
+    summary: str = Field(min_length=1, max_length=5_000)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+    locations: list[CodeLocation] = Field(default_factory=list)
+    details: list[str] = Field(default_factory=list)
+
+    observed_at: str | None = Field(default=None, max_length=100)
+
+
+class EvidenceRelationship(BaseModel):
+    relationship_id: str = Field(min_length=1, max_length=300)
+    source_evidence_id: str = Field(min_length=1, max_length=300)
+    target_evidence_id: str = Field(min_length=1, max_length=300)
+    kind: EvidenceRelationshipKind
+    reason: str | None = Field(default=None, max_length=2_000)
+
+
+class SecurityClaim(BaseModel):
+    schema_version: str = "1.0"
+
+    claim_id: str = Field(min_length=1, max_length=300)
+    statement: str = Field(min_length=1, max_length=5_000)
+
+    category: str = Field(min_length=1, max_length=300)
+    severity: Literal[
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical",
+    ]
+    confidence: float = Field(ge=0.0, le=1.0)
+    state: ClaimState
+
+    cwe: list[str] = Field(default_factory=list)
+    owasp: list[str] = Field(default_factory=list)
+
+    locations: list[CodeLocation] = Field(default_factory=list)
+    evidence: list[EvidenceItem] = Field(default_factory=list)
+    relationships: list[EvidenceRelationship] = Field(default_factory=list)
+
+    remediation: str | None = Field(default=None, max_length=10_000)
+    proposed_patch: str | None = None
+
+    @model_validator(mode="after")
+    def validate_evidence_graph(self) -> "SecurityClaim":
+        evidence_ids = [
+            item.evidence_id
+            for item in self.evidence
+        ]
+
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError(
+                "evidence_id values must be unique within a claim"
+            )
+
+        known_evidence_ids = set(evidence_ids)
+
+        for relationship in self.relationships:
+            if (
+                relationship.source_evidence_id
+                not in known_evidence_ids
+            ):
+                raise ValueError(
+                    "relationship source_evidence_id "
+                    "must reference evidence in the claim"
+                )
+
+            if (
+                relationship.target_evidence_id
+                not in known_evidence_ids
+            ):
+                raise ValueError(
+                    "relationship target_evidence_id "
+                    "must reference evidence in the claim"
+                )
+
+        return self
