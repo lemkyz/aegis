@@ -150,5 +150,10 @@
     "@types/vscode": "^1.100.0",
     "@vscode/vsce": "^3.9.2",
     "typescript": "^5.8.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lemkyz/aegis.git"
+  },
+  "license": "Apache-2.0"
 }
