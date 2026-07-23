@@ -212,7 +212,7 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 
-pip install -r requirements.txt
+pip install -e ".[dev]"
 
 export AEGIS_FINGERPRINT_KEY="$(
   python -c 'import secrets; print(secrets.token_urlsafe(48))'

@@ -71,7 +71,7 @@ Do not introduce silent fallback behavior that changes authorization scope, exec
     cd backend
     python -m venv .venv
     source .venv/bin/activate
-    pip install -r requirements.txt
+    pip install -e ".[dev]"
 
 Set a local fingerprint key before starting the service:
 

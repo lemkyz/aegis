@@ -40,3 +40,7 @@ backend/scanners/eslint/node_modules/
 *.key
 credentials.json
 secrets.json
+
+# Safe configuration templates
+!/.env.example
+!/backend/.env.example
