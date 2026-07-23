@@ -5757,6 +5757,72 @@ async function directoryContainsPythonTests(
   return false;
 }
 
+async function resolvePythonExecutable(
+  workspacePath: string,
+  documentPath: string,
+): Promise<string> {
+  const documentUri =
+    vscode.Uri.file(documentPath);
+
+  const workspaceFolder =
+    vscode.workspace.getWorkspaceFolder(
+      documentUri,
+    );
+
+  const configuredInterpreter =
+    vscode.workspace
+      .getConfiguration(
+        "python",
+        documentUri,
+      )
+      .get<string>(
+        "defaultInterpreterPath",
+      );
+
+  const expandedConfiguredInterpreter =
+    configuredInterpreter?.replace(
+      /\$\{workspaceFolder\}/g,
+      workspaceFolder?.uri.fsPath ??
+        workspacePath,
+    );
+
+  const candidates = [
+    expandedConfiguredInterpreter,
+    path.join(
+      workspacePath,
+      ".venv",
+      "bin",
+      "python",
+    ),
+    path.join(
+      workspacePath,
+      "venv",
+      "bin",
+      "python",
+    ),
+    path.join(
+      workspacePath,
+      "backend",
+      ".venv",
+      "bin",
+      "python",
+    ),
+  ].filter(
+    (candidate): candidate is string =>
+      Boolean(candidate),
+  );
+
+  for (
+    const candidate of new Set(candidates)
+  ) {
+    if (await pathExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "python3";
+}
+
 async function verifyPatchedProject(
   document: vscode.TextDocument,
 ): Promise<ProjectVerificationSuite> {
@@ -5872,9 +5938,15 @@ async function discoverAndRunProjectTests(
         )
         .join(path.delimiter);
 
+      const pythonExecutable =
+        await resolvePythonExecutable(
+          workspacePath,
+          document.fileName,
+        );
+
       return runVerificationCommand({
         name: "Python tests",
-        command: "python3",
+        command: pythonExecutable,
         args: [
           "-m",
           "pytest",
@@ -6202,9 +6274,15 @@ async function verifyPatchedDocumentSyntax(
     path.dirname(document.fileName);
 
   if (language === "python") {
+    const pythonExecutable =
+      await resolvePythonExecutable(
+        workingDirectory,
+        document.fileName,
+      );
+
     return runVerificationCommand({
       name: "Python syntax",
-      command: "python3",
+      command: pythonExecutable,
       args: [
         "-m",
         "py_compile",
@@ -6331,6 +6409,9 @@ async function runVerificationCommand(
           ) ||
           commandError.stderr.includes(
             "not found",
+          ) ||
+          commandError.stderr.includes(
+            "No module named pytest",
           )
         )
       );
