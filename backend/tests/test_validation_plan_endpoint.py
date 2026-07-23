@@ -55,10 +55,12 @@ def test_validation_plan_endpoint_returns_plan() -> None:
         "-I",
         "-c",
         (
-            "import runpy, sys; "
+            "import pathlib, runpy, sys; "
+                "script = pathlib.Path(sys.argv[1]); "
             "sys.path.insert(0, '/workspace'); "
+                "sys.path.insert(0, str(script.parent)); "
             "runpy.run_path("
-            "sys.argv[1], "
+            "str(script), "
             "run_name='__main__'"
             ")"
         ),
