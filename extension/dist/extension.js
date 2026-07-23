@@ -2142,6 +2142,12 @@ async function runAuthorizedDynamicBaseline() {
             execution: beforeExecution,
             success_criteria: successCriteria,
         });
+        if (beforeEvidence.verdict !==
+            "confirmed") {
+            authorizedDynamicBaseline = undefined;
+            void vscode.window.showWarningMessage(`Aegis dynamic baseline was not stored because the vulnerable behavior was not confirmed: ${beforeEvidence.verdict}. Fix verification will remain partial.`);
+            return;
+        }
         authorizedDynamicBaseline = {
             documentUri: document.uri.toString(),
             documentVersion: document.version,
@@ -2153,11 +2159,6 @@ async function runAuthorizedDynamicBaseline() {
             beforeExecution,
             beforeEvidence,
         };
-        if (beforeEvidence.verdict !==
-            "confirmed") {
-            void vscode.window.showWarningMessage(`Aegis dynamic baseline was recorded but not confirmed: ${beforeEvidence.verdict}. Fix verification will remain partial.`);
-            return;
-        }
         void vscode.window.showInformationMessage(`Aegis dynamic baseline CONFIRMED for ${category.label}. The same authorized plan can now be replayed after applying the fix.`);
     }
     catch (error) {

@@ -44,3 +44,7 @@ secrets.json
 # Safe configuration templates
 !/.env.example
 !/backend/.env.example
+
+# Extension local build and packaging artifacts
+/extension/node_modules/
+/extension/*.vsix
