@@ -2809,21 +2809,38 @@ async function hasAnyProjectEntry(projectRoot, relativePaths) {
 async function resolvePythonTestScope(projectRoot, document) {
     const normalizedRoot = path.resolve(projectRoot);
     const normalizedFile = path.resolve(document.fileName);
+    const documentDirectory = path.dirname(normalizedFile);
     const relativeFile = path.relative(normalizedRoot, normalizedFile);
     if (relativeFile.startsWith("..") ||
         path.isAbsolute(relativeFile)) {
-        return path.dirname(normalizedFile);
+        return documentDirectory;
     }
-    const firstSegment = relativeFile.split(path.sep)[0];
-    if (!firstSegment ||
-        firstSegment === path.basename(normalizedFile)) {
-        return normalizedRoot;
+    const pythonProjectMarkers = [
+        "pytest.ini",
+        "pyproject.toml",
+        "setup.cfg",
+        "tox.ini",
+    ];
+    let currentDirectory = documentDirectory;
+    while (true) {
+        if (await hasAnyProjectEntry(currentDirectory, pythonProjectMarkers)) {
+            return currentDirectory;
+        }
+        if (await pathExists(path.join(currentDirectory, "tests"))) {
+            return currentDirectory;
+        }
+        if (currentDirectory === normalizedRoot) {
+            break;
+        }
+        const parentDirectory = path.dirname(currentDirectory);
+        if (parentDirectory === currentDirectory ||
+            !parentDirectory.startsWith(normalizedRoot)) {
+            break;
+        }
+        currentDirectory =
+            parentDirectory;
     }
-    const candidateScope = path.join(normalizedRoot, firstSegment);
-    if (await pathExists(candidateScope)) {
-        return candidateScope;
-    }
-    return normalizedRoot;
+    return documentDirectory;
 }
 async function hasPythonTestFiles(projectRoot) {
     return directoryContainsPythonTests(projectRoot, 0, 6);
@@ -2857,6 +2874,27 @@ async function directoryContainsPythonTests(directory, depth, maximumDepth) {
         }
     }
     return false;
+}
+async function resolvePythonExecutable(workspacePath, documentPath) {
+    const documentUri = vscode.Uri.file(documentPath);
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(documentUri);
+    const configuredInterpreter = vscode.workspace
+        .getConfiguration("python", documentUri)
+        .get("defaultInterpreterPath");
+    const expandedConfiguredInterpreter = configuredInterpreter?.replace(/\$\{workspaceFolder\}/g, workspaceFolder?.uri.fsPath ??
+        workspacePath);
+    const candidates = [
+        expandedConfiguredInterpreter,
+        path.join(workspacePath, ".venv", "bin", "python"),
+        path.join(workspacePath, "venv", "bin", "python"),
+        path.join(workspacePath, "backend", ".venv", "bin", "python"),
+    ].filter((candidate) => Boolean(candidate));
+    for (const candidate of new Set(candidates)) {
+        if (await pathExists(candidate)) {
+            return candidate;
+        }
+    }
+    return "python3";
 }
 async function verifyPatchedProject(document) {
     const syntax = await verifyPatchedDocumentSyntax(document);
@@ -2918,9 +2956,10 @@ async function discoverAndRunProjectTests(workspacePath, document) {
             ]
                 .filter((value) => Boolean(value))
                 .join(path.delimiter);
+            const pythonExecutable = await resolvePythonExecutable(workspacePath, document.fileName);
             return runVerificationCommand({
                 name: "Python tests",
-                command: "python3",
+                command: pythonExecutable,
                 args: [
                     "-m",
                     "pytest",
@@ -3124,9 +3163,10 @@ async function verifyPatchedDocumentSyntax(document) {
     const workingDirectory = workspaceFolder?.uri.fsPath ??
         path.dirname(document.fileName);
     if (language === "python") {
+        const pythonExecutable = await resolvePythonExecutable(workingDirectory, document.fileName);
         return runVerificationCommand({
             name: "Python syntax",
-            command: "python3",
+            command: pythonExecutable,
             args: [
                 "-m",
                 "py_compile",
@@ -3210,7 +3250,8 @@ async function runVerificationCommand(input) {
         const missingTool = commandError.code === "ENOENT" ||
             (typeof commandError.stderr === "string" &&
                 (commandError.stderr.includes("could not determine executable") ||
-                    commandError.stderr.includes("not found")));
+                    commandError.stderr.includes("not found") ||
+                    commandError.stderr.includes("No module named pytest")));
         if (missingTool &&
             input.missingToolMeansSkipped) {
             return {

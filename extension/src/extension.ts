@@ -5650,6 +5650,9 @@ async function resolvePythonTestScope(
   const normalizedFile =
     path.resolve(document.fileName);
 
+  const documentDirectory =
+    path.dirname(normalizedFile);
+
   const relativeFile =
     path.relative(
       normalizedRoot,
@@ -5660,32 +5663,63 @@ async function resolvePythonTestScope(
     relativeFile.startsWith("..") ||
     path.isAbsolute(relativeFile)
   ) {
-    return path.dirname(normalizedFile);
+    return documentDirectory;
   }
 
-  const firstSegment =
-    relativeFile.split(path.sep)[0];
+  const pythonProjectMarkers = [
+    "pytest.ini",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+  ];
 
-  if (
-    !firstSegment ||
-    firstSegment === path.basename(normalizedFile)
-  ) {
-    return normalizedRoot;
+  let currentDirectory =
+    documentDirectory;
+
+  while (true) {
+    if (
+      await hasAnyProjectEntry(
+        currentDirectory,
+        pythonProjectMarkers,
+      )
+    ) {
+      return currentDirectory;
+    }
+
+    if (
+      await pathExists(
+        path.join(
+          currentDirectory,
+          "tests",
+        ),
+      )
+    ) {
+      return currentDirectory;
+    }
+
+    if (
+      currentDirectory === normalizedRoot
+    ) {
+      break;
+    }
+
+    const parentDirectory =
+      path.dirname(currentDirectory);
+
+    if (
+      parentDirectory === currentDirectory ||
+      !parentDirectory.startsWith(
+        normalizedRoot,
+      )
+    ) {
+      break;
+    }
+
+    currentDirectory =
+      parentDirectory;
   }
 
-  const candidateScope =
-    path.join(
-      normalizedRoot,
-      firstSegment,
-    );
-
-  if (
-    await pathExists(candidateScope)
-  ) {
-    return candidateScope;
-  }
-
-  return normalizedRoot;
+  return documentDirectory;
 }
 
 async function hasPythonTestFiles(
