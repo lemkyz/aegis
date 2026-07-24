@@ -32,40 +32,18 @@ def finding_to_claim(
         filename=normalized_filename,
     )
 
-    scanner_rule_ids = sorted(
-        evidence.rule_id
-        for evidence in finding.scanner_evidence
-    )
-
-    location_identity = sorted(
-        (
-            location.file,
-            location.line_start,
-            location.line_end,
-        )
-        for location in locations
+    identity_anchor = _claim_identity_anchor(
+        finding,
+        filename=normalized_filename,
+        category=category,
     )
 
     claim_id = _stable_id(
         "claim",
+        "identity-v2",
         normalized_filename,
         category,
-        finding.title,
-        ",".join(sorted(finding.cwe)),
-        ",".join(scanner_rule_ids),
-        "|".join(
-            (
-                f"{file}:"
-                f"{line_start}:"
-                f"{line_end}"
-            )
-            for (
-                file,
-                line_start,
-                line_end,
-            )
-            in location_identity
-        ),
+        identity_anchor,
     )
 
     return SecurityClaim(
@@ -138,14 +116,20 @@ def _evidence_items(
             EvidenceItem(
                 evidence_id=_stable_id(
                     "evidence",
+                    "identity-v2",
                     "scanner",
-                    filename,
-                    evidence.tool,
-                    evidence.rule_id,
-                    str(evidence.line_start),
-                    str(evidence.line_end),
-                    evidence.message,
-                    evidence.code or "",
+                    _normalize_path(
+                        evidence.file or filename
+                    ),
+                    evidence.tool.lower().strip(),
+                    evidence.rule_id.lower().strip(),
+                    _location_region(
+                        evidence.line_start,
+                        evidence.line_end,
+                    ),
+                    _normalize_code_identity(
+                        evidence.code or ""
+                    ),
                 ),
                 source=EvidenceSource(
                     kind="scanner",
@@ -329,6 +313,134 @@ def _slug(
     )
 
     return normalized.strip("-") or "security"
+
+
+def _claim_identity_anchor(
+    finding: SecurityFinding,
+    *,
+    filename: str,
+    category: str,
+) -> str:
+    """
+    Stable Identity v2 anchor.
+
+    Narrative fields, scanner messages, confidence values, and
+    corroborating scanner additions are intentionally excluded.
+    """
+
+    primary = _primary_scanner_evidence(finding)
+
+    if primary is not None:
+        evidence_file = _normalize_path(
+            primary.file or filename
+        )
+
+        code_identity = _normalize_code_identity(
+            primary.code or ""
+        )
+
+        if not code_identity:
+            code_identity = (
+                primary.rule_id.lower().strip()
+            )
+
+        region = _location_region(
+            primary.line_start,
+            primary.line_end,
+        )
+
+        return "\x1f".join(
+            (
+                evidence_file,
+                category,
+                region,
+                code_identity,
+            )
+        )
+
+    if finding.vulnerable_lines:
+        line_start = min(finding.vulnerable_lines)
+        line_end = max(finding.vulnerable_lines)
+
+        region = _location_region(
+            line_start,
+            line_end,
+        )
+    else:
+        region = "unknown-region"
+
+    return "\x1f".join(
+        (
+            filename,
+            category,
+            region,
+            "no-scanner-code",
+        )
+    )
+
+
+def _primary_scanner_evidence(
+    finding: SecurityFinding,
+) -> ScannerEvidence | None:
+    if not finding.scanner_evidence:
+        return None
+
+    return min(
+        finding.scanner_evidence,
+        key=lambda evidence: (
+            0
+            if evidence.rule_id.lower().startswith(
+                "aegis."
+            )
+            else 1,
+            0
+            if _category_from_rule_id(
+                evidence.rule_id
+            )
+            == _claim_category(finding)
+            else 1,
+            _normalize_path(
+                evidence.file
+            ),
+            evidence.line_start,
+            evidence.line_end,
+            evidence.rule_id.lower(),
+            evidence.tool.lower(),
+        ),
+    )
+
+
+def _location_region(
+    line_start: int,
+    line_end: int,
+) -> str:
+    """
+    Groups small line movements while keeping distant findings
+    separate. A ten-line region is intentionally conservative.
+    """
+
+    midpoint = (
+        line_start + line_end
+    ) // 2
+
+    return f"region-{midpoint // 10}"
+
+
+def _normalize_code_identity(
+    value: str,
+) -> str:
+    """
+    Produces a formatting-insensitive sink signature.
+
+    Whitespace is excluded because indentation and line wrapping
+    must not create a new security identity.
+    """
+
+    return re.sub(
+        r"\s+",
+        "",
+        value.strip(),
+    )
 
 
 def _stable_id(
